@@ -1,0 +1,12 @@
+# Secret scanning: gitleaks default rules plus the ones Monthra needs.
+# Same file in the three repos (server, app, infra).
+#   gitleaks git .   full history (CI does this)
+#   gitleaks dir .   working tree
+[extend]
+useDefault = true
+
+# Files that only exist to hold secrets never enter git, not even empty.
+[[rules]]
+id = "secrets-file"
+description = "Secrets file (.env, tfvars, tfstate, signing keys)"
+path = '''(?:^|/)(?:\.env|\.env\.(?:local|dev|staging|prod|production)|[^/]*\.tfvars|[^/]*\.tfvars\.json|[^/]*\.tfstate(?:\.backup)?|key\.properties|[^/]*\.(?:jks|keystore|p12|pem|key))$'''
