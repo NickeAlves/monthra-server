@@ -1,0 +1,143 @@
+# Local environment: API with hot reload, MongoDB, Redis, Mailpit (and mongo-express with --profile tools).
+# Requires the shared network once: make network  (docker network create monthra-net)
+# Values come from .env; `make up` refuses to start while a required one is empty or still change-me.
+name: monthra-server
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  api:
+    <<: *hardening
+    build:
+      context: .
+      target: dev
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9464:9464"
+    volumes:
+      - .:/src
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+    networks:
+      default:
+      monthra-net:
+        aliases: [monthra-api]
+
+  mongo:
+    <<: *hardening
+    image: mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_DATABASE: ${MONGO_DATABASE:-monthra}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      - ./deploy/mongo/init-app-user.js:/docker-entrypoint-initdb.d/init-app-user.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
+
+  redis:
+    <<: *hardening
+    image: redis:8.8.4-alpine3.23@sha256:c027ae0f677dcf73d74038256f5b88c9ba7b11ccbfae97e96a9f091208d36125
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    # The password goes in through stdin, so it never shows up in the process arguments.
+    command: ["sh", "-c", "printf 'requirepass %s\\nappendonly yes\\n' \"$$REDIS_PASSWORD\" | exec redis-server -"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+
+  mailpit:
+    <<: *hardening
+    image: axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231
+    ports:
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+
+  mongo-express:
+    <<: *hardening
+    profiles: [tools]
+    image: mongo-express:1.0.2@sha256:1b23d7976f0210dbec74045c209e52fbb26d29b2e873d6c6fa3d3f0ae32c2a64
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
+      ME_CONFIG_BASICAUTH_ENABLED: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USERNAME}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD}
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--spider", "http://127.0.0.1:8081/status"]
+      interval: 15s
+      timeout: 3s
+      retries: 6
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256m
+
+volumes:
+  mongo-data:
+  redis-data:
+  go-mod:
+  go-build:
+
+networks:
+  monthra-net:
+    external: true
