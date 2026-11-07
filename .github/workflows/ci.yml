@@ -55,7 +55,11 @@ jobs:
 
   test:
     name: test
-    runs-on: ubuntu-latest
+    # MongoDB refuses to start on Linux kernels 6.19 to 7.0.13 (tcmalloc/rseq
+    # incompatibility, SERVER-121912 / SERVER-125742). ubuntu-latest (26.04,
+    # kernel 7.0.0-azure) is in that range; ubuntu-22.04 runs kernel 6.8.
+    # Move back once the runner kernel is >= 7.0.14 or MongoDB accepts it.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

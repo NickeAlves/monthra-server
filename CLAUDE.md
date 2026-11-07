@@ -12,6 +12,7 @@
 - **Config:** `caarlos0/env/v11` (environment variables only; `.env` is loaded by Docker Compose or `make run`).
 - **Ports:** API `8080`; Prometheus `/metrics` on a separate internal port `9464` (`METRICS_ADDR`), never exposed through the public proxy.
 - **Health:** `/healthz` and `/readyz` live outside `/api/v1`; the distroless image runs `api healthcheck` for its Docker HEALTHCHECK.
+- **MongoDB and the host kernel:** MongoDB exits at startup on Linux kernels 6.19 to 7.0.13 (tcmalloc/rseq incompatibility, SERVER-121912 / SERVER-125742; older builds risked corruption). Any host running `mongod` (CI runners, staging/production VMs) needs kernel <= 6.18 or >= 7.0.14, or use a managed MongoDB. CI integration tests therefore run on `ubuntu-22.04` (kernel 6.8).
 
 ---
 
