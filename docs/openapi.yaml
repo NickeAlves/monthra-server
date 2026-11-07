@@ -1,0 +1,112 @@
+openapi: 3.1.0
+info:
+  title: Monthra API
+  version: 0.1.0
+  description: |
+    Personal finance API: expenses, income, investments and Open Finance connections.
+
+    Errors use problem details (RFC 9457, `application/problem+json`). `title` and `detail`
+    are translated (pt-BR, es-ES, en-US) from `Accept-Language`; `code` is stable and
+    machine-readable.
+  license:
+    name: Proprietary
+servers:
+  - url: http://localhost:8080
+    description: Local
+tags:
+  - name: health
+    description: Liveness and readiness probes
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Reports that the process is up. Never checks dependencies.
+      operationId: getHealthz
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: Checks MongoDB and Redis within 2 seconds.
+      operationId: getReadyz
+      responses:
+        "200":
+          description: Every dependency answered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  headers:
+    X-Request-ID:
+      description: Request id, echoed from a well-formed incoming header or generated.
+      schema:
+        type: string
+  responses:
+    ServiceUnavailable:
+      description: A dependency is unavailable.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          examples: ["urn:monthra:problem:not_found"]
+        title:
+          type: string
+          description: Translated summary.
+        status:
+          type: integer
+        detail:
+          type: string
+          description: Translated explanation.
+        instance:
+          type: string
+          description: Request path.
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          enum:
+            - bad_request
+            - not_found
+            - method_not_allowed
+            - payload_too_large
+            - internal_error
+            - service_unavailable
+        requestId:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
