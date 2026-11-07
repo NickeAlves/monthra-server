@@ -1,0 +1,31 @@
+# Homologation override: production-like image, no hot reload, no debug tools,
+# databases unreachable from the host. TLS terminates at the monthra-infra proxy.
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+services:
+  api:
+    build:
+      target: runtime
+      args:
+        VERSION: ${IMAGE_TAG:-staging-local}
+    image: ghcr.io/nickealves/monthra-server:${IMAGE_TAG:-staging-local}
+    environment:
+      APP_ENV: staging
+      LOG_LEVEL: info
+    ports: !override
+      - "127.0.0.1:8080:8080"
+    volumes: !reset []
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "/api", "healthcheck"]
+      start_period: 20s
+
+  mongo:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  mailpit:
+    profiles: [local-only]
