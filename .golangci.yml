@@ -1,0 +1,38 @@
+version: "2"
+
+run:
+  build-tags: [integration]
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - sloglint
+    - unconvert
+    - usestdlibvars
+  settings:
+    sloglint:
+      attr-only: false
+      no-global: default
+      context: scope
+  exclusions:
+    rules:
+      # Tests use plain contexts and literal fixtures on purpose.
+      - path: _test\.go
+        linters: [noctx, gosec]
+      # Translations are not English.
+      - path: internal/i18n/messages\.go
+        linters: [misspell]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/NickeAlves/monthra-server
