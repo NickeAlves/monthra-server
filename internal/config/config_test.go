@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"log/slog"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestValidate(t *testing.T) {
 			wantErr: "REDIS_PASSWORD is required in staging",
 		},
 		"redis password set in production": {
-			mutate: func(c *Config) { c.AppEnv = EnvProduction; c.Redis.Password = "s3cret" },
+			mutate: func(c *Config) { c.AppEnv = EnvProduction; c.Redis.Password = rand.Text() },
 		},
 		"metrics must not share the public port": {
 			mutate:  func(c *Config) { c.HTTP.MetricsAddr = c.HTTP.Addr },

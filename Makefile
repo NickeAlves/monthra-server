@@ -13,8 +13,14 @@ COMPOSE_STG    := docker compose -f docker-compose.yml -f docker-compose.staging
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-17s %s\n", $$1, $$2}'
 
-env: ## Fail unless .env exists (cp .env.example .env, then replace every change-me)
+REQUIRED_ENV := MONGO_URI REDIS_ADDR MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD REDIS_PASSWORD
+
+env: ## Fail unless .env exists and every required value is set (cp .env.example .env)
 	@test -f .env || { echo ".env is missing: cp .env.example .env and set the passwords"; exit 1; }
+	@for v in $(REQUIRED_ENV); do \
+	  grep -qE "^$$v=.+" .env || { echo "$$v is empty in .env"; exit 1; }; \
+	done
+	@! grep -qE '^[A-Z_]+=.*change-me' .env || { echo "replace every change-me value in .env"; exit 1; }
 
 network: ## Create the shared Docker network used by every Monthra compose file
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null
