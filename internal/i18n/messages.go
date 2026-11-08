@@ -33,6 +33,8 @@ const (
 	ErrMFAAlreadyEnabled    Key = "mfa_already_enabled"
 	ErrMFANotEnabled        Key = "mfa_not_enabled"
 	ErrMFASetupRequired     Key = "mfa_setup_required"
+
+	ErrLimitReached Key = "limit_reached"
 )
 
 // Message is a translated title and detail.
@@ -168,6 +170,11 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Configuração expirada", "Comece a configuração da verificação em duas etapas de novo."},
 		EsES: {"Configuración caducada", "Vuelve a empezar la configuración de la verificación en dos pasos."},
 		EnUS: {"Setup expired", "Start the two-step verification setup again."},
+	},
+	ErrLimitReached: {
+		PtBR: {"Limite atingido", "Você já tem o número máximo de itens deste tipo. Apague ou arquive algum antes de criar outro."},
+		EsES: {"Límite alcanzado", "Ya tienes el número máximo de elementos de este tipo. Elimina o archiva alguno antes de crear otro."},
+		EnUS: {"Limit reached", "You already have the maximum number of items of this kind. Delete or archive one before creating another."},
 	},
 }
 

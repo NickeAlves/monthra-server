@@ -60,11 +60,18 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	// Another user's session looks exactly like one that does not exist.
 	case errors.Is(err, authuc.ErrSessionNotFound):
 		problem.Write(w, r, http.StatusNotFound, i18n.ErrNotFound)
+	// Feature records (accounts, categories, ...): another user's record
+	// looks exactly like one that does not exist. The auth use case maps its
+	// own lookups before they get here, so this never hides an auth failure.
+	case errors.Is(err, domain.ErrNotFound):
+		problem.Write(w, r, http.StatusNotFound, i18n.ErrNotFound)
+	case errors.Is(err, domain.ErrLimitReached):
+		problem.Write(w, r, http.StatusConflict, i18n.ErrLimitReached)
 	case errors.Is(err, authuc.ErrUnavailable):
 		logger.ErrorContext(r.Context(), "auth dependency unavailable", slog.String("error", err.Error()))
 		problem.Write(w, r, http.StatusServiceUnavailable, i18n.ErrServiceUnavailable)
 	default:
-		logger.ErrorContext(r.Context(), "auth request failed", slog.String("error", err.Error()))
+		logger.ErrorContext(r.Context(), "request failed", slog.String("error", err.Error()))
 		problem.Write(w, r, http.StatusInternalServerError, i18n.ErrInternal)
 	}
 }

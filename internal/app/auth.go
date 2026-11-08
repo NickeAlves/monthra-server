@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -54,6 +55,9 @@ type authDeps struct {
 	limiter ratelimit.Limiter
 	mailer  authuc.Mailer
 	cookies cookie.Policy
+	// featureErasers delete the domain data of a user; they run before the
+	// auth ones, so an interrupted deletion can still be signed into and retried.
+	featureErasers []authuc.UserDataEraser
 }
 
 type authComponents struct {
@@ -120,14 +124,14 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Mailer:  d.mailer,
 		Auditor: audit.NewRecorder(repomongo.NewAuditLogs(d.db), logger),
 		Metrics: metrics,
-		// Feature data first (step 3 domains and Open Finance register theirs
-		// above these), then the auth stores; the account itself goes last.
-		Erasers: []authuc.UserDataEraser{
+		// Feature data first (newFeatures), then the auth stores; the account
+		// itself goes last.
+		Erasers: append(slices.Clone(d.featureErasers),
 			repomongo.NewUserEraser(d.db, repomongo.CollAuthTokens),
 			repomongo.NewUserEraser(d.db, repomongo.CollRefreshTokens),
 			repomongo.NewUserEraser(d.db, repomongo.CollSessions),
 			locales,
-		},
+		),
 	}, authuc.Options{
 		RefreshTTL:    cfg.Auth.RefreshTokenTTL,
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,

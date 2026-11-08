@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -337,6 +338,8 @@ func TestErrorMapping(t *testing.T) {
 		"conflict":            {authuc.ErrRefreshConflict, http.StatusConflict, "refresh_conflict"},
 		"unavailable":         {errors.Join(authuc.ErrUnavailable, errors.New("redis")), http.StatusServiceUnavailable, "service_unavailable"},
 		"rate limited":        {&authuc.RateLimitedError{RetryAfter: 61500 * time.Millisecond}, http.StatusTooManyRequests, "rate_limited"},
+		"record not found":    {fmt.Errorf("find account: %w", domain.ErrNotFound), http.StatusNotFound, "not_found"},
+		"limit reached":       {domain.ErrLimitReached, http.StatusConflict, "limit_reached"},
 		"anything else":       {errors.New("boom"), http.StatusInternalServerError, "internal_error"},
 	} {
 		w := serve(newAuthHandler(&fakeAuth{err: tc.err}).Login, post("/api/v1/auth/login", `{"email":"a","password":"b"}`))

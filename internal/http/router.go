@@ -65,6 +65,9 @@ type RouterOptions struct {
 	Authenticator middleware.AuthOptions
 	// Me serves /api/v1/me/*. Nil leaves those routes out.
 	Me *handler.Me
+	// Features are the domain endpoints (accounts, categories, ...), mounted
+	// on the authenticated group. They need Auth.
+	Features []handler.Routes
 	// Locales gives authenticated answers the caller's stored language. Nil
 	// keeps the Accept-Language one.
 	Locales middleware.LocaleResolver
@@ -129,8 +132,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 		if opts.Auth != nil {
 			mountAuth(api, opts)
 		}
-		// Feature routes (accounts, transactions, ...) are mounted on the
-		// authenticated group of mountAuth.
 		api.NotFound(func(w http.ResponseWriter, r *http.Request) {
 			problem.Write(w, r, http.StatusNotFound, i18n.ErrNotFound)
 		})
@@ -184,6 +185,9 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 		r.Post("/auth/mfa/disable", opts.Auth.DisableMFA)
 		if opts.Me != nil {
 			mountMe(r, opts.Me)
+		}
+		for _, f := range opts.Features {
+			f.Mount(r)
 		}
 	})
 }
