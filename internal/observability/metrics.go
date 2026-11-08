@@ -24,6 +24,11 @@ type Metrics struct {
 	rateLimited     *prometheus.CounterVec
 	rateLimitErrors *prometheus.CounterVec
 	csrfRejected    *prometheus.CounterVec
+
+	authLogins   *prometheus.CounterVec
+	refreshReuse prometheus.Counter
+	emailSent    *prometheus.CounterVec
+	emailDropped *prometheus.CounterVec
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -62,6 +67,26 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "csrf_rejected_total",
 			Help:      "Mutating requests rejected by the CSRF guard, by reason.",
 		}, []string{"reason"}),
+		authLogins: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "auth_logins_total",
+			Help:      "Login attempts, by result (success, failure, locked, unverified, captcha).",
+		}, []string{"result"}),
+		refreshReuse: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "auth_refresh_reuse_total",
+			Help:      "Refresh tokens presented again after rotation; each one revoked its session.",
+		}),
+		emailSent: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "email_sent_total",
+			Help:      "Transactional emails handled, by template and result (sent, failed, render_error).",
+		}, []string{"template", "result"}),
+		emailDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "email_dropped_total",
+			Help:      "Transactional emails dropped before delivery because the queue was full or closed, by template.",
+		}, []string{"template"}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "monthra",
@@ -76,6 +101,7 @@ func NewMetrics(version, env string) *Metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.requests, m.duration, m.inFlight, buildInfo,
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
+		m.authLogins, m.refreshReuse, m.emailSent, m.emailDropped,
 	)
 	return m
 }
@@ -106,6 +132,20 @@ func (m *Metrics) RateLimitError(policy string) { m.rateLimitErrors.WithLabelVal
 
 // CSRFRejected counts one request rejected by the CSRF guard.
 func (m *Metrics) CSRFRejected(reason string) { m.csrfRejected.WithLabelValues(reason).Inc() }
+
+// Login counts one login attempt by result.
+func (m *Metrics) Login(result string) { m.authLogins.WithLabelValues(result).Inc() }
+
+// RefreshReuse counts one detected refresh token reuse.
+func (m *Metrics) RefreshReuse() { m.refreshReuse.Inc() }
+
+// EmailSent counts one email outcome.
+func (m *Metrics) EmailSent(template, result string) {
+	m.emailSent.WithLabelValues(template, result).Inc()
+}
+
+// EmailDropped counts one email dropped before delivery.
+func (m *Metrics) EmailDropped(template string) { m.emailDropped.WithLabelValues(template).Inc() }
 
 // Handler serves the registry in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{.Subject}}</title>
+</head>
+<body style="margin:0;padding:0;background:#F5F5F3;color:#161616;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F5F5F3;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#FFFFFF;border-radius:12px;">
+<tr><td style="padding:32px 32px 8px;font-size:20px;font-weight:700;letter-spacing:-0.01em;color:#1E6B52;">Monthra</td></tr>
+<tr><td style="padding:8px 32px 0;font-size:22px;font-weight:600;line-height:1.3;">{{.Heading}}</td></tr>
+{{range .Lines}}<tr><td style="padding:16px 32px 0;font-size:16px;line-height:1.5;">{{.}}</td></tr>
+{{end}}<tr><td style="padding:28px 32px;">
+<a href="{{.Link}}" style="display:inline-block;background:#1E6B52;color:#FFFFFF;text-decoration:none;font-size:16px;font-weight:600;padding:12px 24px;border-radius:8px;">{{.Action}}</a>
+</td></tr>
+<tr><td style="padding:0 32px 32px;font-size:13px;line-height:1.5;color:#5C5C5C;">{{.Footer}}</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
