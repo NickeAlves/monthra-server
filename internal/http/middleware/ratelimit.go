@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"time"
 
@@ -32,8 +31,8 @@ type RateLimitOptions struct {
 func RateLimit(o RateLimitOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := o.Keys.Key("rl", o.Policy.Name, o.Subject(r))
-			res, err := o.Limiter.Allow(r.Context(), key, o.Policy.Rate)
+			bucket := ratelimit.Bucket{Limiter: o.Limiter, Keys: o.Keys, Policy: o.Policy}
+			res, err := bucket.Take(r.Context(), o.Subject(r))
 			if err != nil {
 				o.Metrics.RateLimitError(o.Policy.Name)
 				if o.Policy.FailOpen {
@@ -54,8 +53,7 @@ func RateLimit(o RateLimitOptions) func(http.Handler) http.Handler {
 			h.Set("RateLimit-Reset", strconv.Itoa(ceilSeconds(res.ResetAfter)))
 			if !res.Allowed {
 				o.Metrics.RateLimitRejected(o.Policy.Name)
-				h.Set("Retry-After", strconv.Itoa(max(ceilSeconds(res.RetryAfter), 1)))
-				problem.Write(w, r, http.StatusTooManyRequests, i18n.ErrRateLimited)
+				WriteRateLimited(w, r, res.RetryAfter)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -63,18 +61,13 @@ func RateLimit(o RateLimitOptions) func(http.Handler) http.Handler {
 	}
 }
 
-// ByClientIP keys budgets by client address. IPv6 clients are grouped by
-// their /64, which a single host usually controls entirely.
-func ByClientIP(r *http.Request) string {
-	a := ClientIPFrom(r.Context())
-	switch {
-	case !a.IsValid():
-		return "unknown"
-	case a.Is4():
-		return a.String()
-	default:
-		return netip.PrefixFrom(a, 64).Masked().String()
-	}
+// ByClientIP keys budgets by client address (IPv6 by /64, see ratelimit.IPSubject).
+func ByClientIP(r *http.Request) string { return ratelimit.IPSubject(ClientIPFrom(r.Context())) }
+
+// WriteRateLimited answers 429 with Retry-After (at least one second).
+func WriteRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(max(ceilSeconds(retryAfter), 1)))
+	problem.Write(w, r, http.StatusTooManyRequests, i18n.ErrRateLimited)
 }
 
 func ceilSeconds(d time.Duration) int {

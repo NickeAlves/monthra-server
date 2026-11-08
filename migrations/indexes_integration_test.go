@@ -68,6 +68,24 @@ func TestApplyCreatesIndexesIdempotently(t *testing.T) {
 	ttl := indexSpecs(t, db, repo.CollAuditLogs)[AuditLogTTLIndex]
 	require.NotNil(t, ttl.ExpireAfterSeconds)
 	assert.Equal(t, int32(86400), *ttl.ExpireAfterSeconds)
+
+	for coll, name := range map[string]string{
+		repo.CollSessions:      "sessions_ttl",
+		repo.CollRefreshTokens: "refresh_tokens_ttl",
+		repo.CollAuthTokens:    "auth_tokens_ttl",
+	} {
+		spec := indexSpecs(t, db, coll)[name]
+		require.NotNil(t, spec.ExpireAfterSeconds, name)
+		assert.Equal(t, int32(0), *spec.ExpireAfterSeconds, "%s expires each document at its expires_at", name)
+	}
+	for coll, name := range map[string]string{
+		repo.CollRefreshTokens: "refresh_tokens_hash_unique",
+		repo.CollAuthTokens:    "auth_tokens_hash_unique",
+	} {
+		spec := indexSpecs(t, db, coll)[name]
+		require.NotNil(t, spec.Unique, name)
+		assert.True(t, *spec.Unique, name)
+	}
 }
 
 func TestApplyUpdatesChangedTTL(t *testing.T) {
