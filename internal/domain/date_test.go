@@ -48,3 +48,27 @@ func TestDateOf(t *testing.T) {
 	assert.True(t, a.Equal(DateOf(late.Add(-time.Hour))))
 	assert.False(t, a.Equal(b))
 }
+
+func TestDateAddMonths(t *testing.T) {
+	day := func(s string) Date {
+		d, err := ParseDate(s)
+		require.NoError(t, err)
+		return d
+	}
+	for _, tc := range []struct {
+		from string
+		k    int
+		want string
+	}{
+		{"2027-01-31", 1, "2027-02-28"},
+		{"2028-01-31", 1, "2028-02-29"},
+		{"2027-01-31", 2, "2027-03-31"},
+		{"2027-01-31", 3, "2027-04-30"},
+		{"2026-11-24", 2, "2027-01-24"},
+		{"2027-03-31", -1, "2027-02-28"},
+		{"2026-11-08", 0, "2026-11-08"},
+	} {
+		assert.Equal(t, tc.want, day(tc.from).AddMonths(tc.k).String(), "%s %+d", tc.from, tc.k)
+	}
+	assert.Equal(t, 31, day("2027-01-31").Day())
+}

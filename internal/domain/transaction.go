@@ -91,10 +91,12 @@ type Transaction struct {
 	ToInvoiceMonth Month
 	Description    string
 	// Tags are lower case, unique, in the order the owner gave them.
-	Tags      []string
-	Source    Source
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Tags []string
+	// Installment is set on the installments of a purchase, nil otherwise.
+	Installment *Installment
+	Source      Source
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // IsTransfer reports whether t moves money between two accounts.
@@ -118,6 +120,10 @@ type TransactionInput struct {
 	ToInvoiceMonth string
 	Description    string
 	Tags           []string
+	// Installments splits an expense into that many monthly installments
+	// (MinInstallments to MaxInstallments), Amount being the total; zero is
+	// one transaction. See NewTransactions.
+	Installments int
 }
 
 // TransactionRefs are the records a transaction names, as the caller's
@@ -132,7 +138,8 @@ type TransactionRefs struct {
 // manual transaction of userID, or a *ValidationError naming every invalid
 // field. A reference to a record the owner does not hold is invalid, the
 // same as an id that does not exist, so the answer reveals nothing; an
-// archived account takes no new transactions.
+// archived account takes no new transactions. Installments are checked too,
+// but the purchase comes back whole: NewTransactions splits it.
 func NewTransaction(userID string, in TransactionInput, refs TransactionRefs, now time.Time) (Transaction, error) {
 	var v Validation
 	kind, ok := ParseTransactionKind(in.Kind)
@@ -152,6 +159,9 @@ func NewTransaction(userID string, in TransactionInput, refs TransactionRefs, no
 	v.Check("description", err)
 	t.Tags, err = normalizeTags(in.Tags)
 	v.Check("tags", err)
+	if in.Installments != 0 {
+		checkInstallments(&v, kind, in.Installments, in.Amount, t.Date)
+	}
 
 	if kind != "" {
 		dated := !t.Date.IsZero()
@@ -489,6 +499,8 @@ type TransactionFilter struct {
 	// Invoice is a card invoice: with AccountID, the transactions of that
 	// invoice of the card, the payments to it included.
 	Invoice Month
+	// InstallmentGroupID is the group of the installments of one purchase.
+	InstallmentGroupID string
 }
 
 // TransactionCursor is where a page of transactions ended, in their order:
