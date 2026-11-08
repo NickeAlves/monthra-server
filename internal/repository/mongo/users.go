@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -153,6 +154,46 @@ func (r *Users) UpdatePreferences(ctx context.Context, id string, p domain.Prefe
 		{Key: "preferences.currency", Value: p.Currency},
 		{Key: "updated_at", Value: at.UTC()},
 	})
+}
+
+// CategoriesSeeded reports whether account id already got the default
+// categories (categories_seeded_at is set). An account that does not exist
+// counts as seeded, so nothing is ever written for an account being erased.
+func (r *Users) CategoriesSeeded(ctx context.Context, id string) (bool, error) {
+	oid, err := objectID(id)
+	if err != nil {
+		return true, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	var doc struct {
+		SeededAt *time.Time `bson:"categories_seeded_at"`
+	}
+	opts := options.FindOne().SetProjection(bson.D{{Key: "categories_seeded_at", Value: 1}})
+	err = r.coll.FindOne(ctx, bson.D{{Key: "_id", Value: oid}}, opts).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find user: %w", err)
+	}
+	return doc.SeededAt != nil, nil
+}
+
+// MarkCategoriesSeeded records that account id got the default categories.
+// Marking twice keeps the first date, and marking an account that is gone
+// does nothing.
+func (r *Users) MarkCategoriesSeeded(ctx context.Context, id string, at time.Time) error {
+	oid, err := objectID(id)
+	if err != nil {
+		return nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	_, err = r.coll.UpdateOne(ctx,
+		bson.D{{Key: "_id", Value: oid}, {Key: "categories_seeded_at", Value: bson.D{{Key: "$exists", Value: false}}}},
+		bson.D{{Key: "$set", Value: bson.D{{Key: "categories_seeded_at", Value: at.UTC()}}}},
+	)
+	if err != nil {
+		return fmt.Errorf("mark categories seeded: %w", err)
+	}
+	return nil
 }
 
 // Delete removes the account. Deleting an account that is already gone is
