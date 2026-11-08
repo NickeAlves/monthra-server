@@ -98,6 +98,61 @@ func (r *Sessions) Revoke(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
 
+// ListActive returns up to limit sessions of userID that can still be
+// refreshed at now, the most recently used first.
+func (r *Sessions) ListActive(ctx context.Context, userID string, now time.Time, limit int) ([]domain.Session, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return nil, err
+	}
+	cur, err := r.coll.Find(ctx, activeFor(uid, now),
+		options.Find().
+			SetSort(bson.D{{Key: "last_used_at", Value: -1}, {Key: "_id", Value: -1}}).
+			SetLimit(int64(limit)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find sessions: %w", err)
+	}
+	var docs []sessionDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("read sessions: %w", err)
+	}
+	out := make([]domain.Session, len(docs))
+	for i, d := range docs {
+		out[i] = d.toDomain()
+	}
+	return out, nil
+}
+
+// RevokeForUser ends the session id only if it belongs to userID and is still
+// active at at. It reports false otherwise, so one user cannot learn about or
+// end another user's sessions (IDOR).
+func (r *Sessions) RevokeForUser(ctx context.Context, userID, id string, at time.Time) (bool, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return false, nil //nolint:nilerr // an id that cannot exist matches nothing
+	}
+	sid, err := objectID(id)
+	if err != nil {
+		return false, nil //nolint:nilerr // an id that cannot exist matches nothing
+	}
+	filter := append(bson.D{{Key: "_id", Value: sid}}, activeFor(uid, at)...)
+	res, err := r.coll.UpdateOne(ctx, filter, bson.D{{Key: "$set", Value: bson.D{{Key: "revoked_at", Value: at.UTC()}}}})
+	if err != nil {
+		return false, fmt.Errorf("revoke session: %w", err)
+	}
+	return res.MatchedCount == 1, nil
+}
+
+// activeFor matches the sessions of uid that are neither revoked nor expired at now.
+func activeFor(uid bson.ObjectID, now time.Time) bson.D {
+	return bson.D{
+		{Key: "user_id", Value: uid},
+		{Key: "revoked_at", Value: nil},
+		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: now.UTC()}}},
+	}
+}
+
 // RevokeAllForUser ends every active session of userID except the one with
 // id except (empty for none), and returns the ids it revoked so their access
 // tokens can be denied too.
@@ -107,11 +162,7 @@ func (r *Sessions) RevokeAllForUser(ctx context.Context, userID, except string, 
 		return nil, err
 	}
 	at = at.UTC()
-	filter := bson.D{
-		{Key: "user_id", Value: uid},
-		{Key: "revoked_at", Value: nil},
-		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: at}}},
-	}
+	filter := activeFor(uid, at)
 	if except != "" {
 		eid, err := objectID(except)
 		if err != nil {
