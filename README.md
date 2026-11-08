@@ -149,7 +149,8 @@ The money accounts of the caller: `/api/v1/accounts` and `/api/v1/accounts/{id}`
 - **Money:** every amount is an integer in minor units (cents) in MongoDB and in the API, never a float or a decimal string (`150000` is R$ 1,500.00). Amounts are bounded by `domain.MaxAmount` (10^13), so totals stay exact in JavaScript and Dart on the web, which hold integers exactly only up to 2^53.
 - **Currency per account:** `BRL`, `USD` or `EUR`, chosen at creation and never changed, like the type (`checking`, `savings`, `credit_card`, `cash`, `brokerage`). Totals are grouped by currency; nothing is converted.
 - **Credit cards** carry their closing day, due day (1 to 31; a shorter month uses its last day) and an optional limit; the other types refuse those settings.
-- **Archive or delete:** `PATCH {"archived": true}` hides an account from the default list (`?includeArchived=true` shows it) and keeps its history. `DELETE` removes it for good.
+- **Balances:** every account answers `balance`, its initial balance plus the transactions up to `?asOf=YYYY-MM-DD` (the client's local today; today in UTC when absent), and `projectedBalance`, plus every transaction, future ones included. One aggregation per read sums them by account; a cache comes with the dashboard.
+- **Archive or delete:** `PATCH {"archived": true}` hides an account from the default list (`?includeArchived=true` shows it) and keeps its history; an archived account takes no new transactions. `DELETE` removes an account for good only while it has no transactions (as their account or as the destination of a transfer); otherwise it answers `409 account_in_use`.
 - **Limits:** at most 100 accounts per user, archived ones included (`409 limit_reached`); the list comes back whole, without pagination.
 - **Ownership:** every query filters by the record id and the caller's `user_id`, which only ever comes from the access token. Another user's account answers `404` like an unknown one, and the bodies reject unknown fields, so no client can choose an owner or set a `$` operator.
 - `DELETE /me` erases the accounts before the auth data.
@@ -163,7 +164,22 @@ The expense and income categories of the caller: `/api/v1/categories` (`?kind=ex
 - **Seeding without duplicates:** the defaults are inserted unordered, and the partial unique index `categories_user_default_key_unique` on `{user_id, default_key}` drops the ones already there. Then `users.categories_seeded_at` is set. A request that fails halfway is completed by the next one, concurrent first reads all get the whole set, and once the user is marked, a deleted default never comes back.
 - **Limits:** at most 200 categories per user, the defaults included (`409 limit_reached`); the list comes back whole, oldest first, so the defaults keep their curated order.
 - **Ownership:** same as accounts (`{_id, user_id}` filter, `404` for another user's category, strict bodies). `kind` and `defaultKey` are not patchable.
+- **Deleting a category in use** answers `409 category_in_use`. `DELETE /categories/{id}?reassignTo={other}` moves its transactions to another of the caller's categories of the same kind, deletes it, then moves again any transaction created in between.
 - `DELETE /me` erases the categories before the auth data.
+
+## Transactions
+
+The expenses, income and transfers of the caller: `/api/v1/transactions` and `/api/v1/transactions/{id}`.
+
+- **Kinds:** `expense` and `income` need a category of the same kind; a `transfer` moves money between two of the caller's accounts and has none. `kind` never changes.
+- **Amounts:** always positive, in minor units of the account's currency, which the transaction copies (`currency`), since an account never changes currency. A transfer also stores what arrived (`toAmount`, in `toCurrency`): equal to `amount` between accounts of one currency, required between two. Nothing is converted.
+- **Dates:** a civil day (`"2026-11-30"`, 1900 to 2100) stored as midnight UTC, so a transaction never changes month with the user's time zone. This departs from "every date is an instant in UTC" on purpose; instants (`createdAt`, ...) stay UTC times.
+- **Description and tags:** an optional description (up to 200 characters) and up to 10 tags (lower case, no repeats). Text search (`?q=`) matches a folded copy of the description (lower case, accents removed), so `cafe` finds `Café`; the folded copy never leaves the store, and the text is quoted, never read as a pattern.
+- **Listing:** newest day first, ties broken by the newest id, 50 per page (at most 100), with an opaque `nextCursor` (base64url of the last day and id) to pass back as `?cursor=`. Filters: `from`/`to` (days, both included), `accountId` (also the transfers the account received), `categoryId`, `kind` and `tag`. Every transactions index ends with `{date: -1, _id: -1}`, the listing order, so a page reads only its own entries; indexes replaced this way are dropped at boot (`migrations.obsolete`).
+- **References:** the accounts and the category are looked up among the caller's records only, so another user's id is `invalid` on the field, like one that does not exist; an archived account is `archived`. A change moves only the references it names, so a transaction of an account archived since can still be corrected.
+- **Without multi-document transactions** (MongoDB runs standalone), two races are accepted, both one user racing themselves: a transaction created while its account is deleted, and one created while its category is deleted without `reassignTo`.
+- **Metric:** `monthra_transactions_created_total{kind}`.
+- `DELETE /me` erases the transactions first, before the accounts and the categories they name.
 
 ## Browser security
 
@@ -176,7 +192,7 @@ The expense and income categories of the caller: `/api/v1/categories` (`?kind=ex
 ## Observability
 
 - Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and, on authenticated requests, `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
-- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, plus Go and process metrics.
+- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, `monthra_transactions_created_total{kind}`, plus Go and process metrics.
 - Traces: HTTP server spans named after the route, MongoDB command spans (operation and collection only, never query values) and Redis spans.
 
 ## Layout
@@ -187,7 +203,7 @@ internal/app/         wiring, servers and graceful shutdown
 internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
-internal/usecase/     use cases on ports (auth/, profile/, accounts/)
+internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates

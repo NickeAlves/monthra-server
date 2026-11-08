@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -112,6 +112,11 @@ info:
     - `PATCH` with `"archived": true` hides an account from `GET /accounts`; it comes back with
       `?includeArchived=true` and with `"archived": false`. An archived account keeps its history.
     - One user holds at most 100 accounts, archived ones included (`409 limit_reached`).
+    - Every account answers `balance` (the initial balance plus the transactions up to
+      `?asOf=YYYY-MM-DD`, the client's local today; today in UTC when absent) and
+      `projectedBalance` (plus every transaction, future ones included).
+    - An account with transactions (as their account or as the destination of a transfer)
+      cannot be deleted (`409 account_in_use`): archive it instead.
     - Every route acts on the caller's accounts only: another user's account answers `404`,
       exactly like one that does not exist.
 
@@ -124,7 +129,32 @@ info:
       caller's language (the stored preference) until renamed; a renamed default keeps its
       key and its new name in every language. A deleted default does not come back.
     - One user holds at most 200 categories, the defaults included (`409 limit_reached`).
+    - A category with transactions cannot be deleted (`409 category_in_use`) unless
+      `?reassignTo=` names another category of the same kind, which takes its transactions.
     - Every route acts on the caller's categories only: another user's category answers `404`.
+
+    ## Transactions (`/api/v1/transactions`)
+
+    - A transaction is an `expense`, an `income` or a `transfer` between two of the caller's
+      accounts. `kind` is fixed when it is created.
+    - `amount` is always positive, in minor units of the account's currency (`currency` in
+      the answer); the kind gives the direction.
+    - Expenses and income need a `categoryId` of the same kind (`kind_mismatch` otherwise);
+      transfers have none.
+    - A transfer names `toAccountId`. Between accounts of one currency the amount received
+      (`toAmount`) equals `amount` and may be left out; between two currencies `toAmount` is
+      required (what arrived, in the destination's currency). Nothing is converted.
+    - `date` is a civil day (`"2026-11-30"`, from 1900 to 2100), with no time and no zone, so
+      a transaction stays in its month wherever the user is. Future days are allowed.
+    - An archived account takes no new transactions (`archived` on the field); its existing
+      ones can still be changed.
+    - `GET /transactions` answers pages, newest day first, with `nextCursor` (opaque, null on
+      the last page) to pass back as `?cursor=`. Filters: `from`/`to` (days, both included),
+      `accountId` (its transactions and the transfers it received), `categoryId`, `kind`,
+      `tag` and `q` (text in the description, ignoring case and accents).
+    - Every route acts on the caller's transactions only: another user's transaction, or an
+      id of another user's account or category in the body, reads like one that does not
+      exist (`404`, or `invalid` on the field).
 
     ## Rate limits
 
@@ -149,6 +179,8 @@ tags:
     description: The caller's money accounts (bank, savings, credit card, cash, brokerage)
   - name: categories
     description: The caller's expense and income categories
+  - name: transactions
+    description: The caller's expenses, income and transfers
 paths:
   /healthz:
     get:
@@ -827,6 +859,7 @@ paths:
           schema:
             type: boolean
             default: false
+        - $ref: "#/components/parameters/AsOf"
       responses:
         "200":
           description: "The accounts, every one of them (at most 100; `Cache-Control: no-store`)."
@@ -845,6 +878,7 @@ paths:
     post:
       tags: [accounts]
       summary: Create an account
+      description: A new account's `balance` and `projectedBalance` are its initial balance.
       operationId: createAccount
       security:
         - bearerAuth: []
@@ -895,6 +929,8 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
       responses:
         "200":
           description: "The account (`Cache-Control: no-store`)."
@@ -904,6 +940,8 @@ paths:
                 $ref: "#/components/schemas/Account"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -921,6 +959,8 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
       requestBody:
         required: true
         content:
@@ -949,7 +989,10 @@ paths:
     delete:
       tags: [accounts]
       summary: Delete an account
-      description: Deletes the account for good. To keep its history, archive it instead.
+      description: |
+        Deletes an account without transactions for good. An account with transactions (as
+        their account or as the destination of a transfer) answers `409 account_in_use`:
+        archive it to keep its history.
       operationId: deleteAccount
       security:
         - bearerAuth: []
@@ -961,6 +1004,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/AccountInUse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -1108,8 +1153,239 @@ paths:
     delete:
       tags: [categories]
       summary: Delete a category
-      description: Deletes the category for good. A deleted default is not created again.
+      description: |
+        Deletes the category for good. A deleted default is not created again. A category with
+        transactions answers `409 category_in_use`, unless `reassignTo` names another of the
+        caller's categories of the same kind: its transactions move there first
+        (`reassignTo: invalid` for an unknown or the same category, `kind_mismatch` for the
+        other kind).
       operationId: deleteCategory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: reassignTo
+          in: query
+          required: false
+          description: The category that takes the transactions of the deleted one.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/CategoryInUse"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/transactions:
+    get:
+      tags: [transactions]
+      summary: List the transactions
+      description: |
+        One page, newest day first (ties broken by the newest record). Pass `nextCursor` back
+        as `cursor` for the next page; keep the same filters. Empty parameters are ignored.
+      operationId: listTransactions
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: First day included.
+          schema:
+            $ref: "#/components/schemas/Date"
+        - name: to
+          in: query
+          required: false
+          description: "Last day included; not before `from` (`to: invalid`)."
+          schema:
+            $ref: "#/components/schemas/Date"
+        - name: accountId
+          in: query
+          required: false
+          description: The account's transactions and the transfers it received.
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [expense, income, transfer]
+        - name: tag
+          in: query
+          required: false
+          description: One tag, matched ignoring case.
+          schema:
+            type: string
+            maxLength: 30
+        - name: q
+          in: query
+          required: false
+          description: Text the description contains, ignoring case and accents (`cafe` finds `Café`).
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "One page (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionPage"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [transactions]
+      summary: Create a transaction
+      description: |
+        The accounts and the category are looked up among the caller's records only: another
+        user's id is `invalid`, like one that does not exist. An archived account is
+        `archived`.
+      operationId: createTransaction
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The path of the new transaction.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/transactions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [transactions]
+      summary: Read a transaction
+      operationId: getTransaction
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The transaction (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [transactions]
+      summary: Change a transaction
+      description: |
+        Absent (or null) fields stay as they are; an empty `description` or `tags` clears
+        them, and `tags` replaces the whole list. `kind`, `currency` and `source` are not
+        fields: sending them answers `400`. Only an account the change moves the transaction
+        to must be active, so a transaction of an archived account can still be corrected.
+        Between accounts of one currency `toAmount` follows `amount`; a change that makes a
+        transfer cross currencies needs `toAmount`. A change that changes nothing answers the
+        transaction as it is.
+      operationId: updateTransaction
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionPatch"
+      responses:
+        "200":
+          description: The transaction after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [transactions]
+      summary: Delete a transaction
+      description: Deletes the transaction for good.
+      operationId: deleteTransaction
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -1127,6 +1403,16 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 components:
+  parameters:
+    AsOf:
+      name: asOf
+      in: query
+      required: false
+      description: |
+        The day `balance` counts transactions up to: the client's local today. Today in UTC
+        when absent.
+      schema:
+        $ref: "#/components/schemas/Date"
   securitySchemes:
     bearerAuth:
       type: http
@@ -1223,7 +1509,9 @@ components:
       description: |
         Invalid fields (`validation_failed`), listed in `errors` with codes `required`,
         `invalid`, `too_short`, `too_long`, `out_of_range` (an amount or a day outside its
-        bounds) or `breached`. Nested fields are dotted (`card.closingDay`).
+        bounds), `breached`, `archived` (an archived account takes no new transactions) or
+        `kind_mismatch` (a category of the other kind). Nested fields are dotted
+        (`card.closingDay`).
       content:
         application/problem+json:
           schema:
@@ -1238,6 +1526,18 @@ components:
             $ref: "#/components/schemas/Problem"
     LimitReached:
       description: The caller already holds the maximum number of these records (`limit_reached`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    AccountInUse:
+      description: The account has transactions (`account_in_use`); archive it instead.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    CategoryInUse:
+      description: The category has transactions (`category_in_use`); pass `reassignTo` to move them.
       content:
         application/problem+json:
           schema:
@@ -1630,7 +1930,7 @@ components:
           type: boolean
     Account:
       type: object
-      required: [id, name, type, currency, initialBalance, card, source, archived, createdAt, updatedAt]
+      required: [id, name, type, currency, initialBalance, balance, projectedBalance, card, source, archived, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -1646,6 +1946,14 @@ components:
           type: integer
           format: int64
           description: In minor units of `currency`.
+        balance:
+          type: integer
+          format: int64
+          description: The initial balance plus the transactions up to `asOf`, in minor units.
+        projectedBalance:
+          type: integer
+          format: int64
+          description: The initial balance plus every transaction, future ones included.
         card:
           oneOf:
             - $ref: "#/components/schemas/CardSettings"
@@ -1766,6 +2074,146 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Category"
+    Date:
+      type: string
+      format: date
+      description: A civil day, `YYYY-MM-DD`, from 1900-01-01 to 2100-12-31; no time, no zone.
+      examples: ["2026-11-30"]
+    Amount:
+      type: integer
+      format: int64
+      minimum: 1
+      maximum: 10000000000000
+      description: Positive, in minor units (cents) of the account's currency.
+    Tags:
+      type: array
+      maxItems: 10
+      items:
+        type: string
+        minLength: 1
+        maxLength: 30
+      description: Answered in lower case, without repeats, in the order given.
+    TransactionCreate:
+      type: object
+      additionalProperties: false
+      required: [kind, accountId, amount, date]
+      properties:
+        kind:
+          type: string
+          enum: [expense, income, transfer]
+          description: Fixed for the life of the transaction.
+        accountId:
+          type: string
+          description: Where an expense left or an income arrived; the source of a transfer.
+        categoryId:
+          type: string
+          description: Required on expenses and income (a category of the same kind); refused on transfers.
+        toAccountId:
+          type: string
+          description: Transfers only, and required there; another account than `accountId`.
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: [integer, "null"]
+          format: int64
+          minimum: 1
+          maximum: 10000000000000
+          description: |
+            Transfers only: what arrived, in minor units of the destination's currency. Required
+            between two currencies; between accounts of one currency it equals `amount`.
+        date:
+          $ref: "#/components/schemas/Date"
+        description:
+          type: string
+          maxLength: 200
+        tags:
+          $ref: "#/components/schemas/Tags"
+    TransactionPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        accountId:
+          type: string
+        categoryId:
+          type: string
+          description: Expenses and income only.
+        toAccountId:
+          type: string
+          description: Transfers only.
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10000000000000
+          description: Transfers only.
+        date:
+          $ref: "#/components/schemas/Date"
+        description:
+          type: string
+          maxLength: 200
+          description: An empty string clears it.
+        tags:
+          $ref: "#/components/schemas/Tags"
+    Transaction:
+      type: object
+      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, description, tags, source, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [expense, income, transfer]
+        accountId:
+          type: string
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+          description: The currency of `accountId`, which `amount` is in.
+        categoryId:
+          type: [string, "null"]
+          description: Null on transfers.
+        toAccountId:
+          type: [string, "null"]
+          description: Null except on transfers.
+        toCurrency:
+          type: [string, "null"]
+          enum: [BRL, USD, EUR, null]
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: [integer, "null"]
+          format: int64
+          description: What a transfer added to `toAccountId`, in minor units of `toCurrency`.
+        date:
+          $ref: "#/components/schemas/Date"
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        source:
+          type: string
+          enum: [manual, open_finance]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TransactionPage:
+      type: object
+      required: [transactions, nextCursor]
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        nextCursor:
+          type: [string, "null"]
+          description: Pass it as `cursor` for the next page; null on the last one.
     CsrfToken:
       type: object
       required: [csrfToken]
