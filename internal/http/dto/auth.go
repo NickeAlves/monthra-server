@@ -28,6 +28,17 @@ type ResendVerificationRequest struct {
 	Email string `json:"email" validate:"required,max=254"`
 }
 
+// ForgotPasswordRequest is the body of POST /auth/forgot-password.
+type ForgotPasswordRequest struct {
+	Email string `json:"email" validate:"required,max=254"`
+}
+
+// ResetPasswordRequest is the body of POST /auth/reset-password.
+type ResetPasswordRequest struct {
+	Token    string `json:"token" validate:"required,max=128"`
+	Password string `json:"password" validate:"required,max=4096"`
+}
+
 // RefreshRequest is the body of POST /auth/refresh from native clients;
 // browsers send the refresh cookie and no body.
 type RefreshRequest struct {

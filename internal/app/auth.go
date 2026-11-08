@@ -94,6 +94,9 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		EmailLimit: ratelimit.Bucket{Limiter: d.limiter, Keys: d.keys, Policy: ratelimit.Policy{
 			Name: authuc.PolicyAuthByEmail, Rate: cfg.RateLimits.AuthPerEmail,
 		}},
+		MailLimit: ratelimit.Bucket{Limiter: d.limiter, Keys: d.keys, Policy: ratelimit.Policy{
+			Name: authuc.PolicyAuthMail, Rate: cfg.RateLimits.AuthMailPerEmail,
+		}},
 		Captcha: verifier,
 		Breach:  breach,
 		Hasher:  hasher,
@@ -104,6 +107,7 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 	}, authuc.Options{
 		RefreshTTL:    cfg.Auth.RefreshTokenTTL,
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,
+		ResetTokenTTL: cfg.Auth.ResetTokenTTL,
 		AppURL:        cfg.Auth.AppPublicURL,
 		Lockout:       auth.DefaultLockoutPolicy,
 		RefreshGrace:  refreshGrace(cfg.Auth.RefreshReuseGrace),

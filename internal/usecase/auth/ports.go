@@ -1,6 +1,6 @@
-// Package auth implements sign-up, email verification, login, token refresh
-// and logout (§6.1, §6.2) on top of ports, so every rule is unit tested
-// without a database.
+// Package auth implements sign-up, email verification, login, token refresh,
+// logout and password recovery (§6.1, §6.2) on top of ports, so every rule
+// is unit tested without a database.
 package auth
 
 import (
@@ -19,8 +19,11 @@ import (
 type Users interface {
 	Create(ctx context.Context, u domain.User) (domain.User, error)
 	ByEmail(ctx context.Context, email string) (domain.User, error)
+	ByID(ctx context.Context, id string) (domain.User, error)
 	MarkEmailVerified(ctx context.Context, id string, at time.Time) error
 	UpdatePasswordHash(ctx context.Context, id, hash string, at time.Time) error
+	// ResetPassword replaces the hash and marks the address verified.
+	ResetPassword(ctx context.Context, id, hash string, at time.Time) error
 }
 
 // Sessions persists signed-in devices.
@@ -29,6 +32,8 @@ type Sessions interface {
 	ByID(ctx context.Context, id string) (domain.Session, error)
 	Touch(ctx context.Context, id string, lastUsed, expiresAt time.Time) error
 	Revoke(ctx context.Context, id string, at time.Time) error
+	// RevokeAllForUser ends every active session but except and returns their ids.
+	RevokeAllForUser(ctx context.Context, userID, except string, at time.Time) ([]string, error)
 }
 
 // RefreshTokens persists each session's rotation chain.
@@ -49,6 +54,7 @@ type AuthTokens interface {
 type Revocations interface {
 	DenyToken(ctx context.Context, jti string, ttl time.Duration) error
 	RevokeSession(ctx context.Context, sid string, ttl time.Duration) error
+	RevokeSessions(ctx context.Context, sids []string, ttl time.Duration) error
 }
 
 // Lockout counts failed logins and sign-ups.
@@ -91,6 +97,7 @@ type Auditor interface {
 type Metrics interface {
 	Login(result string)
 	RefreshReuse()
+	PasswordReset()
 	RateLimitRejected(policy string)
 }
 
@@ -104,11 +111,14 @@ type Deps struct {
 	Lockout       Lockout
 	// EmailLimit is the per-address budget of the credential endpoints.
 	EmailLimit Limiter
-	Captcha    captcha.Verifier
-	Breach     core.BreachChecker
-	Hasher     Hasher
-	Tokens     TokenIssuer
-	Mailer     Mailer
-	Auditor    Auditor
-	Metrics    Metrics
+	// MailLimit caps the account emails (verification, sign-up attempt,
+	// password reset) one address receives.
+	MailLimit Limiter
+	Captcha   captcha.Verifier
+	Breach    core.BreachChecker
+	Hasher    Hasher
+	Tokens    TokenIssuer
+	Mailer    Mailer
+	Auditor   Auditor
+	Metrics   Metrics
 }

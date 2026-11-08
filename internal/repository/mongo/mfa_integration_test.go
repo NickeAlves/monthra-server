@@ -32,10 +32,11 @@ func TestUsersResetPassword(t *testing.T) {
 	assert.Equal(t, now.Add(time.Minute), got.EmailVerifiedAt.UTC())
 	assert.Equal(t, now.Add(time.Minute), got.UpdatedAt.UTC())
 
-	require.NoError(t, users.ResetPassword(ctx, unverified.ID, "hash-3", now.Add(time.Hour)))
+	const phc = "$argon2id$v=19$m=65536,t=3,p=2$c2FsdA$aGFzaA"
+	require.NoError(t, users.ResetPassword(ctx, unverified.ID, phc, now.Add(time.Hour)))
 	got, err = users.ByID(ctx, unverified.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "hash-3", got.PasswordHash)
+	assert.Equal(t, phc, got.PasswordHash, "a value starting with $ is stored as is, not read as a field path")
 	assert.Equal(t, now.Add(time.Minute), got.EmailVerifiedAt.UTC(), "keeps the first verification date")
 
 	assert.ErrorIs(t, users.ResetPassword(ctx, bson.NewObjectID().Hex(), "h", now), domain.ErrNotFound)

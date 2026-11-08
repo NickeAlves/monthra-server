@@ -19,7 +19,10 @@ import (
 )
 
 // Policy names, used in Redis keys and metric labels.
-const PolicyAuthByEmail = "auth_email"
+const (
+	PolicyAuthByEmail = "auth_email"
+	PolicyAuthMail    = "auth_mail"
+)
 
 // DefaultRefreshGrace is how long a just-rotated refresh token answers
 // ErrRefreshConflict instead of counting as reuse.
@@ -49,6 +52,7 @@ const maxPasswordBytes = 4 * domain.MaxPasswordLength
 type Options struct {
 	RefreshTTL    time.Duration
 	EmailTokenTTL time.Duration
+	ResetTokenTTL time.Duration
 	// AppURL is the web app base URL for email links.
 	AppURL  config.PublicURL
 	Lockout core.LockoutPolicy
@@ -129,6 +133,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, c Client) erro
 	if err := s.takeEmailBudget(ctx, addr); err != nil {
 		return err
 	}
+	if err := s.takeMailBudget(ctx, addr); err != nil {
+		return err
+	}
 	if s.Captcha.Enabled() {
 		n, err := s.Lockout.CountRegistration(ctx, c.ipSubject())
 		if err != nil {
@@ -195,6 +202,9 @@ func (s *Service) ResendVerification(ctx context.Context, rawEmail string, c Cli
 		return v.Err()
 	}
 	if err := s.takeEmailBudget(ctx, addr); err != nil {
+		return err
+	}
+	if err := s.takeMailBudget(ctx, addr); err != nil {
 		return err
 	}
 	u, err := s.Users.ByEmail(ctx, addr)
@@ -407,19 +417,36 @@ func (s *Service) issue(ctx context.Context, userID, sessionID string, now time.
 }
 
 func (s *Service) sendVerification(ctx context.Context, u domain.User, locale i18n.Locale) error {
+	return s.sendTokenLink(ctx, tokenLink{
+		user: u, locale: locale, purpose: domain.PurposeVerifyEmail, ttl: s.o.EmailTokenTTL,
+		template: email.TemplateVerifyEmail, path: "/verify-email",
+	})
+}
+
+// tokenLink is an email carrying a single-use token.
+type tokenLink struct {
+	user     domain.User
+	locale   i18n.Locale
+	purpose  domain.TokenPurpose
+	ttl      time.Duration
+	template email.Template
+	path     string
+}
+
+func (s *Service) sendTokenLink(ctx context.Context, l tokenLink) error {
 	token := core.NewOpaqueToken()
 	now := s.o.Now()
 	if err := s.AuthTokens.Create(ctx, domain.AuthToken{
-		TokenHash: core.HashToken(token), UserID: u.ID, Purpose: domain.PurposeVerifyEmail,
-		CreatedAt: now, ExpiresAt: now.Add(s.o.EmailTokenTTL),
+		TokenHash: core.HashToken(token), UserID: l.user.ID, Purpose: l.purpose,
+		CreatedAt: now, ExpiresAt: now.Add(l.ttl),
 	}); err != nil {
-		return fmt.Errorf("store verification token: %w", err)
+		return fmt.Errorf("store %s token: %w", l.purpose, err)
 	}
 	// The token travels in the fragment, which browsers never send to servers
 	// or put in Referer headers, so it stays out of access logs.
 	s.Mailer.Send(ctx, email.Message{
-		To: u.Email, Locale: locale, Template: email.TemplateVerifyEmail,
-		Link: s.o.AppURL.Join("/verify-email#token=" + token), LinkTTL: s.o.EmailTokenTTL,
+		To: l.user.Email, Locale: l.locale, Template: l.template,
+		Link: s.o.AppURL.Join(l.path + "#token=" + token), LinkTTL: l.ttl,
 	})
 	return nil
 }
@@ -450,6 +477,20 @@ func (s *Service) takeEmailBudget(ctx context.Context, addr string) error {
 	}
 	if !res.Allowed {
 		s.Metrics.RateLimitRejected(PolicyAuthByEmail)
+		return &RateLimitedError{RetryAfter: res.RetryAfter}
+	}
+	return nil
+}
+
+// takeMailBudget caps the account emails sent to addr. It runs before the
+// address is looked up, so a 429 says nothing about whether it has an account.
+func (s *Service) takeMailBudget(ctx context.Context, addr string) error {
+	res, err := s.MailLimit.Take(ctx, core.HashIdentifier("email", addr))
+	if err != nil {
+		return unavailable(err)
+	}
+	if !res.Allowed {
+		s.Metrics.RateLimitRejected(PolicyAuthMail)
 		return &RateLimitedError{RetryAfter: res.RetryAfter}
 	}
 	return nil

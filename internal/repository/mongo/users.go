@@ -171,9 +171,11 @@ func (r *Users) ResetPassword(ctx context.Context, id, hash string, at time.Time
 		return err
 	}
 	at = at.UTC()
+	// In a pipeline a string starting with "$" is a field path, and PHC
+	// hashes start with "$argon2id$": $literal keeps the hash a value.
 	res, err := r.coll.UpdateOne(ctx, bson.D{{Key: "_id", Value: oid}}, mongo.Pipeline{
 		{{Key: "$set", Value: bson.D{
-			{Key: "password_hash", Value: hash},
+			{Key: "password_hash", Value: bson.D{{Key: "$literal", Value: hash}}},
 			{Key: "updated_at", Value: at},
 			{Key: "email_verified_at", Value: bson.D{{Key: "$ifNull", Value: bson.A{"$email_verified_at", at}}}},
 		}}},

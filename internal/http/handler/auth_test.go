@@ -32,6 +32,7 @@ var issued = authuc.Tokens{
 type fakeAuth struct {
 	err       error
 	register  authuc.RegisterInput
+	reset     authuc.ResetPasswordInput
 	login     authuc.LoginInput
 	token     string
 	email     string
@@ -51,6 +52,16 @@ func (f *fakeAuth) VerifyEmail(_ context.Context, token string, _ authuc.Client)
 
 func (f *fakeAuth) ResendVerification(_ context.Context, email string, _ authuc.Client) error {
 	f.email = email
+	return f.err
+}
+
+func (f *fakeAuth) ForgotPassword(_ context.Context, email string, _ authuc.Client) error {
+	f.email = email
+	return f.err
+}
+
+func (f *fakeAuth) ResetPassword(_ context.Context, in authuc.ResetPasswordInput, _ authuc.Client) error {
+	f.reset = in
 	return f.err
 }
 
@@ -153,6 +164,37 @@ func TestVerifyAndResend(t *testing.T) {
 	w = serve(newAuthHandler(svc).ResendVerification, post("/api/v1/auth/verify-email/resend", `nope`))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	w = serve(newAuthHandler(svc).VerifyEmail, post("/api/v1/auth/verify-email", `{}`))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+func TestForgotAndResetPassword(t *testing.T) {
+	svc := &fakeAuth{}
+	w := serve(newAuthHandler(svc).ForgotPassword, post("/api/v1/auth/forgot-password", `{"email":"ana@example.com"}`))
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	assert.Equal(t, "ana@example.com", svc.email)
+
+	w = serve(newAuthHandler(svc).ResetPassword, post("/api/v1/auth/reset-password", `{"token":"tok","password":"new password!"}`))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, authuc.ResetPasswordInput{Token: "tok", Password: "new password!"}, svc.reset)
+	assert.Empty(t, cookiesOf(w), "native clients get no cookies")
+
+	w = serve(newAuthHandler(svc).ResetPassword, post("/api/v1/auth/reset-password", `{"token":"tok","password":"new password!"}`, fromBrowser))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	cookies := cookiesOf(w)
+	require.Contains(t, cookies, "__Host-monthra_at")
+	require.Contains(t, cookies, "__Secure-monthra_rt")
+	assert.Negative(t, cookies["__Host-monthra_at"].MaxAge, "the revoked session's cookies are cleared")
+
+	svc.err = authuc.ErrTokenInvalid
+	w = serve(newAuthHandler(svc).ResetPassword, post("/api/v1/auth/reset-password", `{"token":"tok","password":"new password!"}`, fromBrowser))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "token_invalid", problemOf(t, w).Code)
+	assert.Empty(t, cookiesOf(w), "a refused reset changes nothing")
+
+	w = serve(newAuthHandler(svc).ForgotPassword, post("/api/v1/auth/forgot-password", `{}`))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	w = serve(newAuthHandler(svc).ResetPassword, post("/api/v1/auth/reset-password", `{"token":"tok"}`))
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 }
 

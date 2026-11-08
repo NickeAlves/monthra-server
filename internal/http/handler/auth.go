@@ -22,6 +22,8 @@ type AuthService interface {
 	Register(ctx context.Context, in authuc.RegisterInput, c authuc.Client) error
 	VerifyEmail(ctx context.Context, token string, c authuc.Client) error
 	ResendVerification(ctx context.Context, email string, c authuc.Client) error
+	ForgotPassword(ctx context.Context, email string, c authuc.Client) error
+	ResetPassword(ctx context.Context, in authuc.ResetPasswordInput, c authuc.Client) error
 	Login(ctx context.Context, in authuc.LoginInput, c authuc.Client) (authuc.Tokens, error)
 	Refresh(ctx context.Context, token string, c authuc.Client) (authuc.Tokens, error)
 	Logout(ctx context.Context, p auth.Principal, c authuc.Client) error
@@ -79,6 +81,37 @@ func (h *Auth) ResendVerification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noContent(w, http.StatusAccepted)
+}
+
+// ForgotPassword handles POST /auth/forgot-password: always 202 for valid input.
+func (h *Auth) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req dto.ForgotPasswordRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if err := h.Service.ForgotPassword(r.Context(), req.Email, client(r)); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	noContent(w, http.StatusAccepted)
+}
+
+// ResetPassword handles POST /auth/reset-password. The reset signs out every
+// session, so a browser also gets its auth cookies cleared.
+func (h *Auth) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req dto.ResetPasswordRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	in := authuc.ResetPasswordInput{Token: req.Token, Password: req.Password}
+	if err := h.Service.ResetPassword(r.Context(), in, client(r)); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if h.isBrowser(r) {
+		h.clearCookies(w)
+	}
+	noContent(w, http.StatusNoContent)
 }
 
 // Login handles POST /auth/login.

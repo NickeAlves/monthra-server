@@ -26,6 +26,10 @@ type okAuth struct{}
 func (okAuth) Register(context.Context, authuc.RegisterInput, authuc.Client) error { return nil }
 func (okAuth) VerifyEmail(context.Context, string, authuc.Client) error            { return nil }
 func (okAuth) ResendVerification(context.Context, string, authuc.Client) error     { return nil }
+func (okAuth) ForgotPassword(context.Context, string, authuc.Client) error         { return nil }
+func (okAuth) ResetPassword(context.Context, authuc.ResetPasswordInput, authuc.Client) error {
+	return nil
+}
 func (okAuth) Login(context.Context, authuc.LoginInput, authuc.Client) (authuc.Tokens, error) {
 	return authuc.Tokens{}, nil
 }
@@ -84,6 +88,8 @@ func TestAuthRoutesAreMounted(t *testing.T) {
 		"/api/v1/auth/verify-email":        {`{"token":"t"}`, http.StatusNoContent},
 		"/api/v1/auth/verify-email/resend": {`{"email":"b"}`, http.StatusAccepted},
 		"/api/v1/auth/login":               {`{"email":"b","password":"c"}`, http.StatusOK},
+		"/api/v1/auth/forgot-password":     {`{"email":"b"}`, http.StatusAccepted},
+		"/api/v1/auth/reset-password":      {`{"token":"t","password":"c"}`, http.StatusNoContent},
 		"/api/v1/auth/refresh":             {`{"refreshToken":"r"}`, http.StatusOK},
 		"/api/v1/auth/logout":              {``, http.StatusUnauthorized},
 	} {
@@ -97,7 +103,7 @@ func TestAuthBudgetByIP(t *testing.T) {
 	h := newAuthRouter(t, &memLimiter{}, config.Rate{Limit: 2, Period: time.Minute})
 	login := `{"email":"b","password":"c"}`
 	assert.Equal(t, http.StatusOK, do(h, http.MethodPost, "/api/v1/auth/login", login, jsonHeaders).Code)
-	assert.Equal(t, http.StatusAccepted, do(h, http.MethodPost, "/api/v1/auth/verify-email/resend", `{"email":"b"}`, jsonHeaders).Code)
+	assert.Equal(t, http.StatusAccepted, do(h, http.MethodPost, "/api/v1/auth/forgot-password", `{"email":"b"}`, jsonHeaders).Code)
 	w := do(h, http.MethodPost, "/api/v1/auth/login", login, jsonHeaders)
 	assert.Equal(t, http.StatusTooManyRequests, w.Code, "the credential endpoints share one budget")
 	assert.Equal(t, http.StatusOK, do(h, http.MethodPost, "/api/v1/auth/refresh", `{"refreshToken":"r"}`, jsonHeaders).Code, "refresh has its own")

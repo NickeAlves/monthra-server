@@ -79,6 +79,37 @@ func (m *memUsers) ByEmail(_ context.Context, addr string) (domain.User, error) 
 	return domain.User{}, domain.ErrNotFound
 }
 
+func (m *memUsers) ByID(_ context.Context, id string) (domain.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return domain.User{}, m.err
+	}
+	u, ok := m.byID[id]
+	if !ok {
+		return domain.User{}, domain.ErrNotFound
+	}
+	return u, nil
+}
+
+func (m *memUsers) ResetPassword(_ context.Context, id, hash string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	u, ok := m.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	u.PasswordHash = hash
+	if u.EmailVerifiedAt == nil {
+		u.EmailVerifiedAt = ptr(at)
+	}
+	m.byID[id] = u
+	return nil
+}
+
 func (m *memUsers) MarkEmailVerified(_ context.Context, id string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -177,6 +208,35 @@ func (m *memSessions) Revoke(_ context.Context, id string, at time.Time) error {
 	}
 	m.byID[id] = s
 	return nil
+}
+
+func (m *memSessions) RevokeAllForUser(_ context.Context, userID, except string, at time.Time) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	var ids []string
+	for id, s := range m.byID {
+		if s.UserID == userID && id != except && s.Active(at) {
+			s.RevokedAt = ptr(at)
+			m.byID[id] = s
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func (m *memSessions) active(userID string, at time.Time) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, s := range m.byID {
+		if s.UserID == userID && s.Active(at) {
+			n++
+		}
+	}
+	return n
 }
 
 type memRefresh struct {
@@ -309,6 +369,22 @@ func (m *memRevocations) RevokeSession(_ context.Context, sid string, ttl time.D
 	}
 	m.sessions[sid] = ttl
 	return nil
+}
+
+func (m *memRevocations) RevokeSessions(ctx context.Context, sids []string, ttl time.Duration) error {
+	for _, sid := range sids {
+		if err := m.RevokeSession(ctx, sid, ttl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *memRevocations) sessionRevoked(sid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.sessions[sid]
+	return ok
 }
 
 // memLockout follows the real policy without expiries.
@@ -469,6 +545,7 @@ type counters struct {
 	logins      map[string]int
 	rateLimited map[string]int
 	reuse       int
+	resets      int
 }
 
 func (c *counters) Login(result string) {
@@ -477,7 +554,8 @@ func (c *counters) Login(result string) {
 	}
 	c.logins[result]++
 }
-func (c *counters) RefreshReuse() { c.reuse++ }
+func (c *counters) RefreshReuse()  { c.reuse++ }
+func (c *counters) PasswordReset() { c.resets++ }
 func (c *counters) RateLimitRejected(policy string) {
 	if c.rateLimited == nil {
 		c.rateLimited = map[string]int{}
@@ -496,6 +574,7 @@ type harness struct {
 	revocations *memRevocations
 	lockout     *memLockout
 	limiter     *memLimiter
+	mailLimiter *memLimiter
 	captcha     *fakeCaptcha
 	breach      *fakeBreach
 	hasher      *fakeHasher
@@ -509,16 +588,16 @@ func newHarness() *harness {
 	c := newClock()
 	h := &harness{
 		clock: c, users: &memUsers{}, sessions: &memSessions{}, refresh: &memRefresh{}, authTokens: &memAuthTokens{},
-		revocations: &memRevocations{}, lockout: &memLockout{policy: core.DefaultLockoutPolicy}, limiter: &memLimiter{},
+		revocations: &memRevocations{}, lockout: &memLockout{policy: core.DefaultLockoutPolicy}, limiter: &memLimiter{}, mailLimiter: &memLimiter{},
 		captcha: &fakeCaptcha{}, breach: &fakeBreach{}, hasher: &fakeHasher{}, tokens: &fakeTokens{clock: c},
 		mail: &mailbox{}, audit: &auditTrail{}, metrics: &counters{},
 	}
 	h.Service = NewService(Deps{
 		Users: h.users, Sessions: h.sessions, RefreshTokens: h.refresh, AuthTokens: h.authTokens,
-		Revocations: h.revocations, Lockout: h.lockout, EmailLimit: h.limiter, Captcha: h.captcha,
+		Revocations: h.revocations, Lockout: h.lockout, EmailLimit: h.limiter, MailLimit: h.mailLimiter, Captcha: h.captcha,
 		Breach: h.breach, Hasher: h.hasher, Tokens: h.tokens, Mailer: h.mail, Auditor: h.audit, Metrics: h.metrics,
 	}, Options{
-		RefreshTTL: 30 * 24 * time.Hour, EmailTokenTTL: 30 * time.Minute,
+		RefreshTTL: 30 * 24 * time.Hour, EmailTokenTTL: 30 * time.Minute, ResetTokenTTL: 15 * time.Minute,
 		AppURL: config.PublicURL("https://app.monthra.example"), Lockout: core.DefaultLockoutPolicy,
 		Logger: slog.New(slog.DiscardHandler), Now: c.now,
 	})
