@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/NickeAlves/monthra-server/internal/domain"
 )
@@ -95,4 +96,53 @@ func (r *Sessions) Revoke(ctx context.Context, id string, at time.Time) error {
 		return fmt.Errorf("revoke session: %w", err)
 	}
 	return nil
+}
+
+// RevokeAllForUser ends every active session of userID except the one with
+// id except (empty for none), and returns the ids it revoked so their access
+// tokens can be denied too.
+func (r *Sessions) RevokeAllForUser(ctx context.Context, userID, except string, at time.Time) ([]string, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return nil, err
+	}
+	at = at.UTC()
+	filter := bson.D{
+		{Key: "user_id", Value: uid},
+		{Key: "revoked_at", Value: nil},
+		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: at}}},
+	}
+	if except != "" {
+		eid, err := objectID(except)
+		if err != nil {
+			return nil, err
+		}
+		filter = append(filter, bson.E{Key: "_id", Value: bson.D{{Key: "$ne", Value: eid}}})
+	}
+	cur, err := r.coll.Find(ctx, filter, options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}))
+	if err != nil {
+		return nil, fmt.Errorf("find sessions: %w", err)
+	}
+	var docs []struct {
+		ID bson.ObjectID `bson:"_id"`
+	}
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("read sessions: %w", err)
+	}
+	if len(docs) == 0 {
+		return nil, nil
+	}
+	oids := make(bson.A, len(docs))
+	ids := make([]string, len(docs))
+	for i, d := range docs {
+		oids[i], ids[i] = d.ID, d.ID.Hex()
+	}
+	_, err = r.coll.UpdateMany(ctx,
+		bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: oids}}}, {Key: "revoked_at", Value: nil}},
+		bson.D{{Key: "$set", Value: bson.D{{Key: "revoked_at", Value: at}}}},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("revoke sessions: %w", err)
+	}
+	return ids, nil
 }

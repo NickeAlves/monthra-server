@@ -57,12 +57,38 @@ type User struct {
 	PasswordHash    string
 	EmailVerifiedAt *time.Time
 	Preferences     Preferences
+	MFA             MFA
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
 
 // EmailVerified reports whether the owner confirmed the email address.
 func (u User) EmailVerified() bool { return u.EmailVerifiedAt != nil }
+
+// MFAEnabled reports whether sign-in asks for a TOTP or recovery code.
+func (u User) MFAEnabled() bool { return u.MFA.EnabledAt != nil }
+
+// MFA is the two-step verification state of an account (§6.1). Secrets are
+// sealed with AES-256-GCM (§6.6) and recovery codes are stored as hashes:
+// nothing here signs in on its own if the database leaks.
+type MFA struct {
+	// Secret is the sealed TOTP secret, set while MFA is enabled.
+	Secret    string
+	EnabledAt *time.Time
+	// PendingSecret is a sealed secret waiting for its first code, until PendingExpiresAt.
+	PendingSecret    string
+	PendingExpiresAt *time.Time
+	// RecoveryCodes are the hashes of the unused recovery codes.
+	RecoveryCodes []string
+	// LastStep is the TOTP time step of the last accepted code; older or
+	// equal steps are refused, so a code works only once.
+	LastStep int64
+}
+
+// PendingActive reports whether a setup is waiting for its first code at now.
+func (m MFA) PendingActive(now time.Time) bool {
+	return m.PendingSecret != "" && m.PendingExpiresAt != nil && now.Before(*m.PendingExpiresAt)
+}
 
 // NewUser builds an unverified account from already validated fields.
 func NewUser(name, email, passwordHash string, locale i18n.Locale, now time.Time) User {
