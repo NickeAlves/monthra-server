@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -151,11 +151,36 @@ info:
     - `GET /transactions` answers pages, newest day first, with `nextCursor` (opaque, null on
       the last page) to pass back as `?cursor=`. Filters: `from`/`to` (days, both included),
       `accountId` (its transactions and the transfers it received), `categoryId`, `kind`,
-      `tag`, `q` (text in the description, ignoring case and accents) and `invoice` (with
-      `accountId`: the transactions of one invoice of that card).
+      `tag`, `q` (text in the description, ignoring case and accents), `invoice` (with
+      `accountId`: the transactions of one invoice of that card) and `installmentGroupId`
+      (the installments of one purchase).
     - Every route acts on the caller's transactions only: another user's transaction, or an
       id of another user's account or category in the body, reads like one that does not
       exist (`404`, or `invalid` on the field).
+
+    ## Installments
+
+    - An expense on any account may be split into 2 to 48 monthly installments:
+      `installments` on `POST /transactions`, with `amount` the total. Each installment is a
+      transaction of its own, with `installment: {groupId, number, count}`; the answer is
+      the first one, and `?installmentGroupId=` lists them all.
+    - Installment *i* takes `amount / count`, the first one the remainder too. It falls on
+      the day of the purchase *i*-1 months later (the last day of a shorter month: a purchase
+      on January 31 falls on February 28, then March 31). On a credit card it belongs to the
+      first one's invoice plus *i*-1 (`invoiceMonth` names the first invoice).
+    - `PATCH` and `DELETE` take `?scope=this|future|all` (`this` by default): the installment
+      addressed, it and the ones numbered after it, or the whole purchase. A scope on a
+      transaction outside a purchase reaches that transaction alone.
+    - A scoped `PATCH` gives the other installments the changes it makes to the one
+      addressed: `amount` (of each installment), `categoryId`, `description`, `tags` and
+      `accountId` take its new value; a new `date` moves each one by the same months, on the
+      new day; when the day, the account or the invoice changes, installment *j* takes the
+      addressed one's invoice plus *j*-*k*. A field sent with the value it already has changes
+      nothing, so a client may send its whole form. The answer is the installment addressed.
+    - A purchase stays on one account: changing `accountId` of an installment needs
+      `scope=all` (`scope: invalid` otherwise).
+    - Deleting installments leaves the others numbered as they were (`1/12`); the number of
+      installments never changes (delete the purchase and create it again).
 
     ## Credit card invoices (`/api/v1/accounts/{id}/invoices`)
 
@@ -1332,6 +1357,12 @@ paths:
             charges, credits and the payments to it.
           schema:
             $ref: "#/components/schemas/Month"
+        - name: installmentGroupId
+          in: query
+          required: false
+          description: The installments of one purchase (`installment.groupId`).
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -1367,7 +1398,8 @@ paths:
       description: |
         The accounts and the category are looked up among the caller's records only: another
         user's id is `invalid`, like one that does not exist. An archived account is
-        `archived`.
+        `archived`. With `installments`, it creates the installments of the purchase and
+        answers the first one.
       operationId: createTransaction
       security:
         - bearerAuth: []
@@ -1383,7 +1415,7 @@ paths:
           description: Created.
           headers:
             Location:
-              description: The path of the new transaction.
+              description: The path of the new transaction (the first installment of a purchase).
               schema:
                 type: string
           content:
@@ -1441,11 +1473,14 @@ paths:
         to must be active, so a transaction of an archived account can still be corrected.
         Between accounts of one currency `toAmount` follows `amount`; a change that makes a
         transfer cross currencies needs `toAmount`. A change that changes nothing answers the
-        transaction as it is.
+        transaction as it is. On an installment, `scope` reaches the other installments of
+        the purchase (see Installments).
       operationId: updateTransaction
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/EditScope"
       requestBody:
         required: true
         content:
@@ -1474,11 +1509,15 @@ paths:
     delete:
       tags: [transactions]
       summary: Delete a transaction
-      description: Deletes the transaction for good.
+      description: |
+        Deletes the transaction for good; on an installment, `scope` reaches the others of
+        the purchase, and the ones left keep their numbers.
       operationId: deleteTransaction
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/EditScope"
       responses:
         "204":
           description: Deleted.
@@ -1486,6 +1525,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -1503,6 +1544,18 @@ components:
         when absent.
       schema:
         $ref: "#/components/schemas/Date"
+    EditScope:
+      name: scope
+      in: query
+      required: false
+      description: |
+        How far the change reaches on an installment: `this` one, it and the `future` ones
+        (numbered after it), or `all` of the purchase. Outside a purchase, the transaction
+        alone. An unknown value answers `422` (`scope: invalid`).
+      schema:
+        type: string
+        enum: [this, future, all]
+        default: this
   securitySchemes:
     bearerAuth:
       type: http
@@ -2236,6 +2289,13 @@ components:
           maxLength: 200
         tags:
           $ref: "#/components/schemas/Tags"
+        installments:
+          type: integer
+          minimum: 2
+          maximum: 48
+          description: |
+            Expenses only (`invalid` otherwise): splits `amount`, the total, into that many
+            monthly installments, at least one minor unit each (`out_of_range` otherwise).
     TransactionPatch:
       type: object
       additionalProperties: false
@@ -2273,7 +2333,7 @@ components:
           $ref: "#/components/schemas/Tags"
     Transaction:
       type: object
-      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, invoiceMonth, toInvoiceMonth, description, tags, source, createdAt, updatedAt]
+      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, invoiceMonth, toInvoiceMonth, description, tags, installment, source, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -2316,6 +2376,11 @@ components:
           type: array
           items:
             type: string
+        installment:
+          oneOf:
+            - $ref: "#/components/schemas/Installment"
+            - type: "null"
+          description: Null outside an installment purchase.
         source:
           type: string
           enum: [manual, open_finance]
@@ -2325,6 +2390,21 @@ components:
         updatedAt:
           type: string
           format: date-time
+    Installment:
+      type: object
+      required: [groupId, number, count]
+      properties:
+        groupId:
+          type: string
+          description: The same on every installment of a purchase.
+        number:
+          type: integer
+          minimum: 1
+          description: From 1; never renumbered.
+        count:
+          type: integer
+          minimum: 2
+          maximum: 48
     TransactionPage:
       type: object
       required: [transactions, nextCursor]

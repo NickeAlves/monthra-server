@@ -192,6 +192,16 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 - **Reads:** one aggregation of the card's legs up to the last month asked, served by two partial indexes on `{user_id, account_id | to_account_id, invoice_month | to_invoice_month, date, _id}`; not cached yet (the dashboard brings the cache).
 - Card transactions written before invoices existed have none; nothing was deployed, so local data can simply be recreated.
 
+## Installments
+
+`POST /api/v1/transactions` with `"installments": 2..48` splits an expense (on any account) into monthly installments, `amount` being the total. Each installment is a transaction with `installment: {groupId, number, count}`; the answer is the first one, and `GET /api/v1/transactions?installmentGroupId=` lists the purchase.
+
+- **Split:** each installment takes `amount / count`, the first one the remainder too. Installment *i* falls on the day of the purchase *i*-1 months later (January 31, February 28, March 31); on a credit card it belongs to the first one's invoice plus *i*-1, one installment per invoice. So future invoices show as `upcoming` with their installments, and `balance` counts each installment on its day (`projectedBalance` counts them all).
+- **Scope:** `PATCH` and `DELETE /api/v1/transactions/{id}?scope=this|future|all` (`this` by default) reach the installment, it and the ones numbered after it, or the whole purchase; on a transaction outside a purchase, that one alone.
+- **Scoped edits:** the other installments take the changes made to the one addressed: `amount` (each installment's), category, description, tags and account take its new value; a new day moves each by the same months, on the new day; a new day, account or invoice gives installment *j* the addressed one's invoice plus *j*-*k*. A field sent unchanged changes nothing, so clients may send their whole form. A purchase stays on one account: `accountId` needs `scope=all` (`422 scope: invalid` otherwise).
+- **Kept as created:** numbers never change (deleting some leaves "3/12"), and so does the count: to change it, delete the purchase (`scope=all`) and create it again.
+- **No multi-document transactions:** a failed insert removes the installments already stored (once, best effort); a scoped edit writes the changed installments in one unordered bulk write, so sending the same edit again completes an interrupted one. One partial index `{user_id, installment.group_id, date, _id}` serves the listing and the group reads, which touch at most 48 entries.
+
 ## Browser security
 
 - **CORS:** only `CORS_ALLOWED_ORIGINS` get CORS headers (with credentials). A preflight from any other origin gets 403.
