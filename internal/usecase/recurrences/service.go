@@ -83,19 +83,7 @@ func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Millise
 // horizon is the last day whose occurrences are created: asOf, the
 // reader's local today (zero is today in UTC), within a day of today in
 // UTC, which every time zone's today is. So no reader creates the future.
-func (s *Service) horizon(asOf domain.Date) domain.Date {
-	today := domain.DateOf(s.now().UTC())
-	switch {
-	case asOf.IsZero():
-		return today
-	case asOf.Before(today.AddDays(-1)):
-		return today.AddDays(-1)
-	case today.AddDays(1).Before(asOf):
-		return today.AddDays(1)
-	default:
-		return asOf
-	}
-}
+func (s *Service) horizon(asOf domain.Date) domain.Date { return domain.Today(asOf, s.now()) }
 
 // Materialize creates the occurrences of the caller's recurrences due up
 // to asOf (see horizon), at most MaxOccurrencesPerPass; the rest come with

@@ -72,3 +72,28 @@ func TestDateAddMonths(t *testing.T) {
 	}
 	assert.Equal(t, 31, day("2027-01-31").Day())
 }
+
+func TestToday(t *testing.T) {
+	// 01:00 on November 8 in UTC is still November 7 in Brazil.
+	now := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
+	day := func(s string) Date {
+		d, err := ParseDate(s)
+		require.NoError(t, err)
+		return d
+	}
+	for asOf, want := range map[string]string{
+		"":           "2026-11-08",
+		"2026-11-07": "2026-11-07",
+		"2026-11-09": "2026-11-09",
+		"2026-11-01": "2026-11-07",
+		"2027-01-01": "2026-11-09",
+	} {
+		var d Date
+		if asOf != "" {
+			d = day(asOf)
+		}
+		assert.Equal(t, want, Today(d, now).String(), asOf)
+	}
+	inBrazil := now.In(time.FixedZone("BRT", -3*3600))
+	assert.Equal(t, "2026-11-08", Today(Date{}, inBrazil).String(), "today in UTC, whatever the clock's zone")
+}

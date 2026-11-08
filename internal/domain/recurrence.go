@@ -411,6 +411,27 @@ func (r Recurrence) Occurrences(refs TransactionRefs, through Date, max int, now
 	return out, next
 }
 
+// Between returns the transactions r is still to create from day from
+// through day to (both included): those from its next occurrence on, so
+// never one already created. It is a projection, with no invoice; an ended
+// recurrence has none.
+func (r Recurrence) Between(from, to Date, now time.Time) []Transaction {
+	if !r.Active() || to.Before(from) {
+		return nil
+	}
+	p := r
+	if p.Next.Before(from) {
+		next, ok := r.Rule.NextOn(from)
+		if !ok {
+			return nil
+		}
+		p.Next = next
+	}
+	// At most one a day.
+	ts, _ := p.Occurrences(TransactionRefs{}, to, to.daysSince(from)+1, now)
+	return ts
+}
+
 // invoiceOn is the invoice of a leg on account id on day: the one pick
 // finds when acc (what the caller found for id) is a credit card, none
 // otherwise.

@@ -409,3 +409,38 @@ func TestApplyInScopeOnOccurrences(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, edit.Others, "another recurrence's occurrences are left alone")
 }
+
+func TestRecurrenceBetween(t *testing.T) {
+	days := func(ts []Transaction) []string {
+		out := []string{}
+		for _, tx := range ts {
+			out = append(out, tx.Date.String())
+		}
+		return out
+	}
+	r := rent(t, "2026-11-05")
+	assert.Equal(t, []string{"2026-12-05"}, days(r.Between(day(t, "2026-12-01"), day(t, "2026-12-31"), txNow)))
+	assert.Empty(t, r.Between(day(t, "2026-11-01"), day(t, "2026-11-30"), txNow), "November's is created already")
+	assert.Equal(t, []string{"2026-12-05", "2027-01-05"}, days(r.Between(day(t, "2026-11-01"), day(t, "2027-01-31"), txNow)))
+	far := r.Between(day(t, "2030-03-01"), day(t, "2030-03-31"), txNow)
+	assert.Equal(t, []string{"2030-03-05"}, days(far), "years ahead, without walking there")
+	assert.Equal(t, "r", far[0].Recurrence.ID)
+	assert.Equal(t, int64(250000), far[0].Amount)
+	assert.True(t, far[0].InvoiceMonth.IsZero(), "a projection has no invoice")
+	assert.Empty(t, r.Between(day(t, "2026-12-31"), day(t, "2026-12-01"), txNow))
+
+	ending := r
+	ending.Rule.End = day(t, "2027-01-04")
+	assert.Empty(t, ending.Between(day(t, "2027-01-01"), day(t, "2027-01-31"), txNow), "ends before the 5th")
+	ending.Rule.End = day(t, "2027-01-05")
+	assert.Equal(t, []string{"2027-01-05"}, days(ending.Between(day(t, "2027-01-01"), day(t, "2027-01-31"), txNow)))
+
+	daily := r
+	daily.Rule, daily.Next = rule(t, FrequencyDaily, 1, "2026-08-05", ""), day(t, "2026-11-09")
+	assert.Len(t, daily.Between(day(t, "2026-12-01"), day(t, "2026-12-31"), txNow), 31)
+	assert.Len(t, daily.Between(day(t, "2026-11-01"), day(t, "2026-12-31"), txNow), 22+31, "from its next one, November 9")
+
+	ended := r
+	ended.Next = Date{}
+	assert.Empty(t, ended.Between(day(t, "2026-12-01"), day(t, "2026-12-31"), txNow))
+}
