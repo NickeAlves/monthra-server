@@ -30,27 +30,36 @@ func NewTransactions(db *mongo.Database) *Transactions {
 // credit card, to_invoice_month when to_account_id is; neither is ever null,
 // so the partial invoice indexes hold exactly the card legs.
 // description_search is the folded description that text search matches;
-// it never leaves the store.
+// it never leaves the store. installment is present on the installments of
+// a purchase only, and never changes.
 type transactionDoc struct {
-	ID                bson.ObjectID  `bson:"_id"`
-	UserID            bson.ObjectID  `bson:"user_id"`
-	Kind              string         `bson:"kind"`
-	AccountID         bson.ObjectID  `bson:"account_id"`
-	Currency          string         `bson:"currency"`
-	CategoryID        *bson.ObjectID `bson:"category_id,omitempty"`
-	Amount            int64          `bson:"amount"`
-	ToAccountID       *bson.ObjectID `bson:"to_account_id,omitempty"`
-	ToCurrency        string         `bson:"to_currency,omitempty"`
-	ToAmount          int64          `bson:"to_amount,omitempty"`
-	Date              time.Time      `bson:"date"`
-	InvoiceMonth      string         `bson:"invoice_month,omitempty"`
-	ToInvoiceMonth    string         `bson:"to_invoice_month,omitempty"`
-	Description       string         `bson:"description"`
-	DescriptionSearch string         `bson:"description_search"`
-	Tags              []string       `bson:"tags"`
-	Source            string         `bson:"source"`
-	CreatedAt         time.Time      `bson:"created_at"`
-	UpdatedAt         time.Time      `bson:"updated_at"`
+	ID                bson.ObjectID   `bson:"_id"`
+	UserID            bson.ObjectID   `bson:"user_id"`
+	Kind              string          `bson:"kind"`
+	AccountID         bson.ObjectID   `bson:"account_id"`
+	Currency          string          `bson:"currency"`
+	CategoryID        *bson.ObjectID  `bson:"category_id,omitempty"`
+	Amount            int64           `bson:"amount"`
+	ToAccountID       *bson.ObjectID  `bson:"to_account_id,omitempty"`
+	ToCurrency        string          `bson:"to_currency,omitempty"`
+	ToAmount          int64           `bson:"to_amount,omitempty"`
+	Date              time.Time       `bson:"date"`
+	InvoiceMonth      string          `bson:"invoice_month,omitempty"`
+	ToInvoiceMonth    string          `bson:"to_invoice_month,omitempty"`
+	Description       string          `bson:"description"`
+	DescriptionSearch string          `bson:"description_search"`
+	Tags              []string        `bson:"tags"`
+	Installment       *installmentDoc `bson:"installment,omitempty"`
+	Source            string          `bson:"source"`
+	CreatedAt         time.Time       `bson:"created_at"`
+	UpdatedAt         time.Time       `bson:"updated_at"`
+}
+
+// installmentDoc places a transaction in an installment purchase.
+type installmentDoc struct {
+	GroupID bson.ObjectID `bson:"group_id"`
+	Number  int           `bson:"number"`
+	Count   int           `bson:"count"`
 }
 
 // optionalID parses an id that may be absent ("" is nil).
@@ -76,6 +85,13 @@ func newTransactionDoc(t domain.Transaction) (transactionDoc, error) {
 	}
 	if err := doc.setEditable(t); err != nil {
 		return transactionDoc{}, err
+	}
+	if t.Installment != nil {
+		group, err := objectID(t.Installment.GroupID)
+		if err != nil {
+			return transactionDoc{}, err
+		}
+		doc.Installment = &installmentDoc{GroupID: group, Number: t.Installment.Number, Count: t.Installment.Count}
 	}
 	return doc, nil
 }
@@ -123,6 +139,9 @@ func (d transactionDoc) toDomain() domain.Transaction {
 	if t.Tags == nil {
 		t.Tags = []string{}
 	}
+	if d.Installment != nil {
+		t.Installment = &domain.Installment{GroupID: d.Installment.GroupID.Hex(), Number: d.Installment.Number, Count: d.Installment.Count}
+	}
 	return t
 }
 
@@ -148,6 +167,101 @@ func (r *Transactions) Insert(ctx context.Context, t domain.Transaction) (domain
 	return doc.toDomain(), nil
 }
 
+// cleanupTimeout bounds the removal of a purchase whose insert failed.
+const cleanupTimeout = 5 * time.Second
+
+// InsertInstallments stores the installments of one purchase under a new
+// group id and returns them, in order. MongoDB runs standalone (no
+// multi-document transactions), so when the insert fails midway the
+// installments already stored are deleted once, even if the request is
+// gone, and the error is returned.
+func (r *Transactions) InsertInstallments(ctx context.Context, ts []domain.Transaction) ([]domain.Transaction, error) {
+	group := bson.NewObjectID()
+	docs := make([]any, len(ts))
+	out := make([]domain.Transaction, len(ts))
+	for i, t := range ts {
+		if t.Installment == nil {
+			return nil, errors.New("insert installments: not an installment")
+		}
+		inst := *t.Installment
+		inst.GroupID = group.Hex()
+		t.Installment = &inst
+		doc, err := newTransactionDoc(t)
+		if err != nil {
+			return nil, err
+		}
+		docs[i] = doc
+		out[i] = doc.toDomain()
+	}
+	if _, err := r.coll.InsertMany(ctx, docs); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		uid, _ := objectID(ts[0].UserID)
+		_, _ = r.coll.DeleteMany(cleanup, inGroup(uid, group, 0))
+		return nil, fmt.Errorf("insert installments: %w", err)
+	}
+	return out, nil
+}
+
+// inGroup matches the installments of group of uid numbered from (0 or 1
+// for all of them).
+func inGroup(uid, group bson.ObjectID, from int) bson.D {
+	f := bson.D{{Key: "user_id", Value: uid}, {Key: "installment.group_id", Value: group}}
+	if from > 1 {
+		f = append(f, bson.E{Key: "installment.number", Value: bson.D{{Key: "$gte", Value: from}}})
+	}
+	return f
+}
+
+// groupFilter is inGroup for ids as the domain holds them; an id that
+// cannot exist is an error, which owns nothing.
+func groupFilter(userID, groupID string, from int) (bson.D, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return nil, err
+	}
+	group, err := objectID(groupID)
+	if err != nil {
+		return nil, err
+	}
+	return inGroup(uid, group, from), nil
+}
+
+// Installments returns the installments of group groupID of userID
+// numbered from on (1 for all of them), in their order.
+func (r *Transactions) Installments(ctx context.Context, userID, groupID string, from int) ([]domain.Transaction, error) {
+	filter, err := groupFilter(userID, groupID, from)
+	if err != nil {
+		return []domain.Transaction{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	cur, err := r.coll.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "installment.number", Value: 1}}))
+	if err != nil {
+		return nil, fmt.Errorf("find installments: %w", err)
+	}
+	var docs []transactionDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode installments: %w", err)
+	}
+	out := make([]domain.Transaction, len(docs))
+	for i, d := range docs {
+		out[i] = d.toDomain()
+	}
+	return out, nil
+}
+
+// DeleteInstallments removes the installments of group groupID of userID
+// numbered from on (1 for all of them); deleting them again is a no-op.
+func (r *Transactions) DeleteInstallments(ctx context.Context, userID, groupID string, from int) error {
+	filter, err := groupFilter(userID, groupID, from)
+	if err != nil {
+		return nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	if _, err := r.coll.DeleteMany(ctx, filter); err != nil {
+		return fmt.Errorf("delete installments: %w", err)
+	}
+	return nil
+}
+
 // ByID returns transaction id of userID, or domain.ErrNotFound.
 func (r *Transactions) ByID(ctx context.Context, userID, id string) (domain.Transaction, error) {
 	filter, err := ownedBy(userID, id)
@@ -161,16 +275,54 @@ func (r *Transactions) ByID(ctx context.Context, userID, id string) (domain.Tran
 	return doc.toDomain(), nil
 }
 
-// Update stores the editable fields of t; the kind, the source and the
-// creation never change.
+// Update stores the editable fields of t; the kind, the source, the
+// installment and the creation never change.
 func (r *Transactions) Update(ctx context.Context, t domain.Transaction) error {
-	filter, err := ownedBy(t.UserID, t.ID)
+	filter, update, err := updateOf(t)
 	if err != nil {
 		return err
 	}
+	res, err := r.coll.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update transaction: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateMany stores the editable fields of each of ts, as Update does, in
+// one round trip. The writes are independent (no multi-document
+// transactions): after a failure some may be stored, and writing the same
+// values again completes them.
+func (r *Transactions) UpdateMany(ctx context.Context, ts []domain.Transaction) error {
+	if len(ts) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, len(ts))
+	for i, t := range ts {
+		filter, update, err := updateOf(t)
+		if err != nil {
+			return err
+		}
+		models[i] = mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update)
+	}
+	if _, err := r.coll.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
+		return fmt.Errorf("update transactions: %w", err)
+	}
+	return nil
+}
+
+// updateOf is the filter and the update that store the editable fields of t.
+func updateOf(t domain.Transaction) (bson.D, bson.D, error) {
+	filter, err := ownedBy(t.UserID, t.ID)
+	if err != nil {
+		return nil, nil, err
+	}
 	var doc transactionDoc
 	if err := doc.setEditable(t); err != nil {
-		return err
+		return nil, nil, err
 	}
 	set := bson.D{
 		{Key: "account_id", Value: doc.AccountID},
@@ -208,14 +360,7 @@ func (r *Transactions) Update(ctx context.Context, t domain.Transaction) error {
 	if len(unset) > 0 {
 		update = append(update, bson.E{Key: "$unset", Value: unset})
 	}
-	res, err := r.coll.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("update transaction: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	return filter, update, nil
 }
 
 // Delete removes transaction id of userID, or answers domain.ErrNotFound.
@@ -296,6 +441,13 @@ func listFilter(userID string, f domain.TransactionFilter, after *domain.Transac
 	}
 	if f.Tag != "" {
 		rest = append(rest, bson.E{Key: "tags", Value: f.Tag})
+	}
+	if f.InstallmentGroupID != "" {
+		group, err := objectID(f.InstallmentGroupID)
+		if err != nil {
+			return nil, err
+		}
+		rest = append(rest, bson.E{Key: "installment.group_id", Value: group})
 	}
 	if f.Search != "" {
 		// A literal match: the reader's text never acts as a pattern.
