@@ -36,3 +36,15 @@ type Ledger interface {
 	// through, oldest first; one without transactions is missing.
 	InvoiceSums(ctx context.Context, userID, accountID string, through domain.Month) ([]domain.InvoiceSums, error)
 }
+
+// Recurrences is what the accounts need from the recurrences: creating the
+// occurrences due before a balance is read, and telling whether an account
+// is named by one.
+type Recurrences interface {
+	// Materialize creates the occurrences of userID's recurrences due up to
+	// asOf (the reader's today; zero is today in UTC). It never fails.
+	Materialize(ctx context.Context, userID string, asOf domain.Date)
+	// AccountUsage reports whether a recurrence of userID names account id,
+	// and whether one of those is still active.
+	AccountUsage(ctx context.Context, userID, id string) (used, active bool, err error)
+}

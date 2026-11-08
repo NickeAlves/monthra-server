@@ -16,11 +16,12 @@ const DefaultMaxCategories = 200
 
 // Service serves the caller's categories.
 type Service struct {
-	store  Store
-	marker SeedMarker
-	usage  Usage
-	now    func() time.Time
-	max    int
+	store       Store
+	marker      SeedMarker
+	usage       Usage
+	recurrences Usage
+	now         func() time.Time
+	max         int
 }
 
 // Options tunes the Service.
@@ -29,6 +30,16 @@ type Options struct {
 	Now func() time.Time
 	// MaxCategories defaults to DefaultMaxCategories.
 	MaxCategories int
+	// Recurrences are the other records that name categories; nil names
+	// none.
+	Recurrences Usage
+}
+
+type noUsage struct{}
+
+func (noUsage) CategoryInUse(context.Context, string, string) (bool, error) { return false, nil }
+func (noUsage) ReassignCategory(context.Context, string, string, string, time.Time) error {
+	return nil
 }
 
 // NewService returns the service.
@@ -39,7 +50,10 @@ func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service
 	if o.MaxCategories <= 0 {
 		o.MaxCategories = DefaultMaxCategories
 	}
-	return &Service{store: store, marker: marker, usage: usage, now: o.Now, max: o.MaxCategories}
+	if o.Recurrences == nil {
+		o.Recurrences = noUsage{}
+	}
+	return &Service{store: store, marker: marker, usage: usage, recurrences: o.Recurrences, now: o.Now, max: o.MaxCategories}
 }
 
 // clock is the current time at the precision MongoDB keeps (milliseconds),
@@ -140,23 +154,30 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Catego
 // Delete removes one of the caller's categories, or answers
 // domain.ErrNotFound. A deleted default is not seeded again.
 //
-// A category with transactions answers domain.ErrCategoryInUse, unless
-// reassignTo names another of the caller's categories, of the same kind,
-// to move them to first (else a *domain.ValidationError on reassignTo).
-// The move runs again after the deletion, so a transaction created in
-// between is not left naming a category that is gone.
+// A category with transactions answers domain.ErrCategoryInUse, and one a
+// recurrence names domain.ErrUsedByRecurrence, unless reassignTo names
+// another of the caller's categories, of the same kind, to move them (the
+// transactions and the recurrences) to first (else a
+// *domain.ValidationError on reassignTo). The move runs again after the
+// deletion, so a record created in between is not left naming a category
+// that is gone.
 func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) error {
 	c, err := s.Get(ctx, userID, id)
 	if err != nil {
 		return err
 	}
 	if reassignTo == "" {
-		inUse, err := s.usage.CategoryInUse(ctx, userID, id)
-		if err != nil {
-			return fmt.Errorf("check category use: %w", err)
-		}
-		if inUse {
-			return domain.ErrCategoryInUse
+		for _, check := range []struct {
+			usage Usage
+			err   error
+		}{{s.usage, domain.ErrCategoryInUse}, {s.recurrences, domain.ErrUsedByRecurrence}} {
+			inUse, err := check.usage.CategoryInUse(ctx, userID, id)
+			if err != nil {
+				return fmt.Errorf("check category use: %w", err)
+			}
+			if inUse {
+				return check.err
+			}
 		}
 		return s.delete(ctx, userID, id)
 	}
@@ -165,14 +186,26 @@ func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) err
 		return err
 	}
 	now := s.clock()
-	if err := s.usage.ReassignCategory(ctx, userID, id, reassignTo, now); err != nil {
-		return fmt.Errorf("move transactions: %w", err)
+	if err := s.reassign(ctx, userID, id, reassignTo, now); err != nil {
+		return err
 	}
 	if err := s.delete(ctx, userID, id); err != nil {
 		return err
 	}
-	if err := s.usage.ReassignCategory(ctx, userID, id, reassignTo, now); err != nil {
-		return fmt.Errorf("move late transactions: %w", err)
+	if err := s.reassign(ctx, userID, id, reassignTo, now); err != nil {
+		return fmt.Errorf("move late records: %w", err)
+	}
+	return nil
+}
+
+// reassign moves the transactions and the recurrences of category from to
+// category to.
+func (s *Service) reassign(ctx context.Context, userID, from, to string, at time.Time) error {
+	if err := s.usage.ReassignCategory(ctx, userID, from, to, at); err != nil {
+		return fmt.Errorf("move transactions: %w", err)
+	}
+	if err := s.recurrences.ReassignCategory(ctx, userID, from, to, at); err != nil {
+		return fmt.Errorf("move recurrences: %w", err)
 	}
 	return nil
 }

@@ -14,10 +14,11 @@ const DefaultMaxAccounts = 100
 
 // Service serves the caller's accounts.
 type Service struct {
-	store  Store
-	ledger Ledger
-	now    func() time.Time
-	max    int
+	store       Store
+	ledger      Ledger
+	recurrences Recurrences
+	now         func() time.Time
+	max         int
 }
 
 // Options tunes the Service.
@@ -26,6 +27,15 @@ type Options struct {
 	Now func() time.Time
 	// MaxAccounts defaults to DefaultMaxAccounts.
 	MaxAccounts int
+	// Recurrences defaults to no recurrences.
+	Recurrences Recurrences
+}
+
+type noRecurrences struct{}
+
+func (noRecurrences) Materialize(context.Context, string, domain.Date) {}
+func (noRecurrences) AccountUsage(context.Context, string, string) (bool, bool, error) {
+	return false, false, nil
 }
 
 // NewService returns the service.
@@ -36,7 +46,10 @@ func NewService(store Store, ledger Ledger, o Options) *Service {
 	if o.MaxAccounts <= 0 {
 		o.MaxAccounts = DefaultMaxAccounts
 	}
-	return &Service{store: store, ledger: ledger, now: o.Now, max: o.MaxAccounts}
+	if o.Recurrences == nil {
+		o.Recurrences = noRecurrences{}
+	}
+	return &Service{store: store, ledger: ledger, recurrences: o.Recurrences, now: o.Now, max: o.MaxAccounts}
 }
 
 // clock is the current time at the precision MongoDB keeps (milliseconds),
@@ -54,8 +67,10 @@ func (s *Service) today(asOf domain.Date) domain.Date {
 
 // List returns the caller's accounts, oldest first, with their balances up
 // to asOf (the reader's today; zero is today in UTC); archived ones only
-// when includeArchived.
+// when includeArchived. The occurrences of the recurrences due up to asOf
+// are created first, so the balances count them.
 func (s *Service) List(ctx context.Context, userID string, includeArchived bool, asOf domain.Date) ([]domain.AccountWithBalance, error) {
+	s.recurrences.Materialize(ctx, userID, asOf)
 	list, err := s.store.List(ctx, userID, includeArchived)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
@@ -74,8 +89,10 @@ func (s *Service) List(ctx context.Context, userID string, includeArchived bool,
 	return out, nil
 }
 
-// withBalance adds the balance of one account up to asOf.
+// withBalance adds the balance of one account up to asOf, the occurrences
+// due up to then included.
 func (s *Service) withBalance(ctx context.Context, a domain.Account, asOf domain.Date) (domain.AccountWithBalance, error) {
+	s.recurrences.Materialize(ctx, a.UserID, asOf)
 	sums, err := s.ledger.Balances(ctx, a.UserID, []string{a.ID}, s.today(asOf))
 	if err != nil {
 		return domain.AccountWithBalance{}, fmt.Errorf("sum balance: %w", err)
@@ -126,10 +143,22 @@ func (s *Service) find(ctx context.Context, userID, id string) (domain.Account, 
 
 // Update applies a patch to one of the caller's accounts and returns it
 // with its balance up to asOf. A patch that changes nothing writes nothing.
+// Archiving an account an active recurrence names answers
+// domain.ErrUsedByRecurrence: an archived account takes no new
+// transactions, so the recurrence must end or move first.
 func (s *Service) Update(ctx context.Context, userID, id string, p domain.AccountPatch, asOf domain.Date) (domain.AccountWithBalance, error) {
 	current, err := s.find(ctx, userID, id)
 	if err != nil {
 		return domain.AccountWithBalance{}, err
+	}
+	if p.Archived != nil && *p.Archived && !current.Archived() {
+		_, active, err := s.recurrences.AccountUsage(ctx, userID, id)
+		if err != nil {
+			return domain.AccountWithBalance{}, err
+		}
+		if active {
+			return domain.AccountWithBalance{}, domain.ErrUsedByRecurrence
+		}
 	}
 	next, changed, err := p.Apply(current, s.clock())
 	if err != nil {
@@ -157,6 +186,7 @@ func (s *Service) Invoices(ctx context.Context, userID, id string, from, to doma
 	if !a.IsCard() {
 		return nil, fmt.Errorf("invoices of a %s account: %w", a.Type, domain.ErrNotFound)
 	}
+	s.recurrences.Materialize(ctx, userID, asOf)
 	day := s.today(asOf)
 	switch {
 	case from.IsZero() && to.IsZero():
@@ -187,8 +217,10 @@ func (s *Service) Invoices(ctx context.Context, userID, id string, from, to doma
 // Delete removes one of the caller's accounts, or answers
 // domain.ErrNotFound. An account with transactions (as their account or as
 // the destination of a transfer) answers domain.ErrAccountInUse: archiving
-// keeps its history instead. A transaction created while the account is
-// deleted may be left naming it; that is one user racing themselves.
+// keeps its history instead. One a recurrence names (even an ended one)
+// answers domain.ErrUsedByRecurrence. A transaction created while the
+// account is deleted may be left naming it; that is one user racing
+// themselves.
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	inUse, err := s.ledger.AccountInUse(ctx, userID, id)
 	if err != nil {
@@ -196,6 +228,13 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	}
 	if inUse {
 		return domain.ErrAccountInUse
+	}
+	used, _, err := s.recurrences.AccountUsage(ctx, userID, id)
+	if err != nil {
+		return err
+	}
+	if used {
+		return domain.ErrUsedByRecurrence
 	}
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete account: %w", err)

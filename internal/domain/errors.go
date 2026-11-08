@@ -21,6 +21,10 @@ var (
 	// ErrCategoryInUse means a category still has transactions; they must
 	// move to another category first.
 	ErrCategoryInUse = errors.New("category in use")
+	// ErrUsedByRecurrence means a recurrence names an account or a
+	// category: it cannot be deleted (or an account archived, while the
+	// recurrence is active) until the recurrence ends or moves.
+	ErrUsedByRecurrence = errors.New("used by a recurrence")
 )
 
 // Field error codes, stable for clients to switch on.

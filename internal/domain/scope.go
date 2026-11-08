@@ -1,7 +1,7 @@
 package domain
 
 // EditScope is how far an edit or a deletion of one transaction of a series
-// reaches: the installments of a purchase, and later the occurrences of a
+// reaches: the installments of a purchase, or the occurrences of a
 // recurrence. On a transaction outside a series every scope reaches that
 // transaction alone.
 type EditScope string

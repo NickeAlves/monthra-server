@@ -94,9 +94,12 @@ type Transaction struct {
 	Tags []string
 	// Installment is set on the installments of a purchase, nil otherwise.
 	Installment *Installment
-	Source      Source
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Recurrence is set on the occurrences a recurrence created, nil
+	// otherwise.
+	Recurrence *RecurrenceLink
+	Source     Source
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // IsTransfer reports whether t moves money between two accounts.
@@ -501,6 +504,8 @@ type TransactionFilter struct {
 	Invoice Month
 	// InstallmentGroupID is the group of the installments of one purchase.
 	InstallmentGroupID string
+	// RecurrenceID is the recurrence that created the transactions.
+	RecurrenceID string
 }
 
 // TransactionCursor is where a page of transactions ended, in their order:

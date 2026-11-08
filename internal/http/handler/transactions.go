@@ -39,7 +39,7 @@ func (h *Transactions) Mount(r chi.Router) {
 	r.Delete("/transactions/{id}", h.Delete)
 }
 
-// List handles GET /transactions?from&to&accountId&categoryId&kind&tag&q&invoice&installmentGroupId&limit&cursor.
+// List handles GET /transactions?from&to&accountId&categoryId&kind&tag&q&invoice&installmentGroupId&recurrenceId&asOf&limit&cursor.
 func (h *Transactions) List(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
@@ -50,7 +50,7 @@ func (h *Transactions) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, h.Logger, err)
 		return
 	}
-	page, err := h.Service.List(r.Context(), p.UserID, transactions.Query{Filter: q.Filter, After: q.After, Limit: q.Limit})
+	page, err := h.Service.List(r.Context(), p.UserID, transactions.Query{Filter: q.Filter, After: q.After, Limit: q.Limit, AsOf: q.AsOf})
 	if err != nil {
 		writeError(w, r, h.Logger, err)
 		return

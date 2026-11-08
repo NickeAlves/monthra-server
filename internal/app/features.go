@@ -11,6 +11,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/usecase/accounts"
 	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
 	"github.com/NickeAlves/monthra-server/internal/usecase/categories"
+	"github.com/NickeAlves/monthra-server/internal/usecase/recurrences"
 	"github.com/NickeAlves/monthra-server/internal/usecase/transactions"
 )
 
@@ -29,19 +30,31 @@ func newFeatures(db *mongo.Database, logger *slog.Logger, metrics *observability
 	// The transactions hold the balances of the accounts and tell whether
 	// an account or a category is still in use.
 	ledger := repomongo.NewTransactions(db)
-	accountsService := accounts.NewService(accountsStore, ledger, accounts.Options{})
+	// The recurrences create their occurrences before every read of the
+	// transactions (balances and invoices included), and name accounts and
+	// categories too.
+	recurrencesStore := repomongo.NewRecurrences(db)
+	recurrencesService := recurrences.NewService(recurrencesStore, ledger, accountsStore, categoriesStore,
+		recurrences.Options{Logger: logger, Metrics: metrics})
+	accountsService := accounts.NewService(accountsStore, ledger, accounts.Options{Recurrences: recurrencesService})
 	// users.categories_seeded_at marks who already got the default set.
-	categoriesService := categories.NewService(categoriesStore, repomongo.NewUsers(db), ledger, categories.Options{})
-	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore, transactions.Options{Metrics: metrics})
+	categoriesService := categories.NewService(categoriesStore, repomongo.NewUsers(db), ledger,
+		categories.Options{Recurrences: recurrencesStore})
+	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore,
+		transactions.Options{Metrics: metrics, Series: recurrencesService})
 	return features{
 		routes: []handler.Routes{
 			&handler.Accounts{Service: accountsService, Logger: logger},
 			&handler.Categories{Service: categoriesService, Logger: logger},
 			&handler.Transactions{Service: transactionsService, Logger: logger},
+			&handler.Recurrences{Service: recurrencesService, Logger: logger},
 		},
-		// Transactions first: a deletion interrupted halfway never leaves
-		// transactions naming accounts or categories that are gone.
+		// Recurrences first, so no read during the deletion creates
+		// occurrences again; then transactions: a deletion interrupted
+		// halfway never leaves records naming accounts or categories that
+		// are gone.
 		erasers: []authuc.UserDataEraser{
+			repomongo.NewUserEraser(db, repomongo.CollRecurrences),
 			repomongo.NewUserEraser(db, repomongo.CollTransactions),
 			repomongo.NewUserEraser(db, repomongo.CollAccounts),
 			repomongo.NewUserEraser(db, repomongo.CollCategories),

@@ -66,12 +66,17 @@ func TestApplyCreatesIndexesIdempotently(t *testing.T) {
 	require.NotNil(t, defaults.Unique)
 	assert.True(t, *defaults.Unique, "one default category per key and user")
 
-	// Only the card legs carry an invoice, and only installments a group.
-	for _, name := range []string{
-		"transactions_user_account_invoice_date_id", "transactions_user_to_account_invoice_date_id",
-		"transactions_user_installment_date_id",
+	// Only the card legs carry an invoice, only installments a group, only
+	// occurrences a recurrence, and only active recurrences a next day.
+	for name, coll := range map[string]string{
+		"transactions_user_account_invoice_date_id":    repo.CollTransactions,
+		"transactions_user_to_account_invoice_date_id": repo.CollTransactions,
+		"transactions_user_installment_date_id":        repo.CollTransactions,
+		"transactions_user_recurrence_date_id":         repo.CollTransactions,
+		"transactions_recurrence_occurrence_unique":    repo.CollTransactions,
+		"recurrences_user_next":                        repo.CollRecurrences,
 	} {
-		raw, err := db.Collection(repo.CollTransactions).Indexes().List(ctx)
+		raw, err := db.Collection(coll).Indexes().List(ctx)
 		require.NoError(t, err)
 		var all []bson.M
 		require.NoError(t, raw.All(ctx, &all))
@@ -84,6 +89,10 @@ func TestApplyCreatesIndexesIdempotently(t *testing.T) {
 		}
 		assert.True(t, found, name)
 	}
+
+	occurrences := indexSpecs(t, db, repo.CollTransactions)["transactions_recurrence_occurrence_unique"]
+	require.NotNil(t, occurrences.Unique)
+	assert.True(t, *occurrences.Unique, "one occurrence per rule day")
 
 	budgets := indexSpecs(t, db, repo.CollBudgets)
 	require.NotNil(t, budgets["budgets_user_month_category_unique"].Unique)
@@ -150,8 +159,12 @@ func TestApplyDropsObsoleteIndexes(t *testing.T) {
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "category_id", Value: 1}, {Key: "date", Value: -1}}, Options: options.Index().SetName("transactions_user_category_date")},
 	})
 	require.NoError(t, err)
+	_, err = db.Collection(repo.CollRecurrences).Indexes().CreateOne(ctx,
+		mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("recurrences_user")})
+	require.NoError(t, err)
 
 	require.NoError(t, Apply(ctx, db, Options{AuditLogTTL: time.Hour}))
+	assert.NotContains(t, indexSpecs(t, db, repo.CollRecurrences), "recurrences_user")
 	specs := indexSpecs(t, db, repo.CollTransactions)
 	assert.NotContains(t, specs, "transactions_user_account_date")
 	assert.NotContains(t, specs, "transactions_user_category_date")

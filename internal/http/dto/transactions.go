@@ -91,9 +91,19 @@ type Transaction struct {
 	Tags           []string `json:"tags"`
 	// Installment is null outside an installment purchase.
 	Installment *Installment `json:"installment"`
-	Source      string       `json:"source"`
-	CreatedAt   time.Time    `json:"createdAt"`
-	UpdatedAt   time.Time    `json:"updatedAt"`
+	// Recurrence is null except on the occurrences of a recurrence.
+	Recurrence *RecurrenceLink `json:"recurrence"`
+	Source     string          `json:"source"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	UpdatedAt  time.Time       `json:"updatedAt"`
+}
+
+// RecurrenceLink places a transaction among the occurrences of recurrence
+// id: occurrenceDate is the day its rule gave it, which stays when the
+// transaction's own day is edited.
+type RecurrenceLink struct {
+	ID             string `json:"id"`
+	OccurrenceDate string `json:"occurrenceDate"`
 }
 
 // Installment places a transaction in an installment purchase: number of
@@ -123,6 +133,9 @@ func NewTransaction(t domain.Transaction) Transaction {
 	out.InvoiceMonth, out.ToInvoiceMonth = optionalMonth(t.InvoiceMonth), optionalMonth(t.ToInvoiceMonth)
 	if t.Installment != nil {
 		out.Installment = &Installment{GroupID: t.Installment.GroupID, Number: t.Installment.Number, Count: t.Installment.Count}
+	}
+	if t.Recurrence != nil {
+		out.Recurrence = &RecurrenceLink{ID: t.Recurrence.ID, OccurrenceDate: t.Recurrence.Date.String()}
 	}
 	return out
 }
@@ -162,6 +175,9 @@ type TransactionQuery struct {
 	After  *domain.TransactionCursor
 	// Limit is 0 when the query names none.
 	Limit int
+	// AsOf is the reader's today, up to which the occurrences of the
+	// recurrences are created; zero when the query names none.
+	AsOf domain.Date
 }
 
 // ParseTransactionQuery reads the filters, the page size and the cursor of
@@ -208,6 +224,11 @@ func ParseTransactionQuery(q url.Values) (TransactionQuery, error) {
 		}
 	}
 	out.Filter.InstallmentGroupID = q.Get("installmentGroupId")
+	out.Filter.RecurrenceID = q.Get("recurrenceId")
+	if raw := q.Get("asOf"); raw != "" {
+		out.AsOf, err = domain.ParseDate(raw)
+		v.Check("asOf", err)
+	}
 	if raw := q.Get("limit"); raw != "" {
 		out.Limit, err = strconv.Atoi(raw)
 		v.Check("limit", err)

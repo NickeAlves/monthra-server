@@ -65,9 +65,24 @@ func Indexes() map[string][]mongo.IndexModel {
 			// The installments of a purchase: their listing and the edits and
 			// deletions of a group, which read at most MaxInstallments entries.
 			partial(transactionsBy("transactions_user_installment_date_id", "installment.group_id"), "installment.group_id"),
+			// The occurrences of a recurrence: their listing, and one occurrence
+			// per rule day, so creating them twice (two readers at once, or a
+			// pass interrupted before its recurrence advanced) stores one. The
+			// unique index also serves the edits and deletions by scope.
+			partial(transactionsBy("transactions_user_recurrence_date_id", "recurrence_id"), "recurrence_id"),
+			partial(mongo.IndexModel{
+				Keys:    bson.D{{Key: "recurrence_id", Value: 1}, {Key: "occurrence_date", Value: 1}},
+				Options: options.Index().SetName("transactions_recurrence_occurrence_unique").SetUnique(true),
+			}, "recurrence_id"),
 		},
 		repo.CollRecurrences: {
-			{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("recurrences_user")},
+			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("recurrences_user_created")},
+			// The active recurrences by their next occurrence: what falls due
+			// on each read. Ended ones have no next_date and stay out.
+			partial(mongo.IndexModel{
+				Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "next_date", Value: 1}},
+				Options: options.Index().SetName("recurrences_user_next"),
+			}, "next_date"),
 		},
 		repo.CollBudgets: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "month", Value: 1}, {Key: "category_id", Value: 1}}, Options: options.Index().SetName("budgets_user_month_category_unique").SetUnique(true)},
@@ -106,6 +121,8 @@ func Indexes() map[string][]mongo.IndexModel {
 var obsolete = map[string][]string{
 	// Replaced by the *_date_id indexes, which match the listing order.
 	repo.CollTransactions: {"transactions_user_account_date", "transactions_user_category_date"},
+	// Replaced by recurrences_user_created and recurrences_user_next.
+	repo.CollRecurrences: {"recurrences_user"},
 }
 
 // transactionsBy is an index of the transactions of a user by the fields

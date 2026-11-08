@@ -102,18 +102,48 @@ func (m *memStore) Installments(_ context.Context, userID, groupID string, from 
 	return out, nil
 }
 
+// UpdateMany stores ts; with updateErr set, it stores the first one only
+// and fails, as a write interrupted midway.
 func (m *memStore) UpdateMany(ctx context.Context, ts []domain.Transaction) error {
 	m.bulkUpdates++
 	for _, t := range ts {
 		if _, err := m.ByID(ctx, t.UserID, t.ID); err == nil {
 			m.txs[t.ID] = t
 		}
+		if m.updateErr != nil {
+			return m.updateErr
+		}
 	}
-	return m.updateErr
+	return nil
 }
 
 func (m *memStore) DeleteInstallments(ctx context.Context, userID, groupID string, from int) error {
 	list, err := m.Installments(ctx, userID, groupID, from)
+	if err != nil {
+		return err
+	}
+	for _, t := range list {
+		delete(m.txs, t.ID)
+	}
+	return nil
+}
+
+func (m *memStore) Occurrences(_ context.Context, userID, recurrenceID string, from domain.Date) ([]domain.Transaction, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	var out []domain.Transaction
+	for _, id := range m.order {
+		t, ok := m.txs[id]
+		if ok && t.UserID == userID && t.Recurrence != nil && t.Recurrence.ID == recurrenceID && !t.Recurrence.Date.Before(from) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) DeleteOccurrences(ctx context.Context, userID, recurrenceID string, from domain.Date) error {
+	list, err := m.Occurrences(ctx, userID, recurrenceID, from)
 	if err != nil {
 		return err
 	}
@@ -177,11 +207,37 @@ type countingMetrics struct{ created []string }
 
 func (m *countingMetrics) TransactionCreated(kind string) { m.created = append(m.created, kind) }
 
+// fakeSeries records what the transactions asked of the recurrences.
+type fakeSeries struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeSeries) Materialize(_ context.Context, userID string, asOf domain.Date) {
+	f.calls = append(f.calls, "materialize:"+userID+"@"+asOf.String())
+}
+
+func (f *fakeSeries) Follow(_ context.Context, before, after domain.Transaction) error {
+	f.calls = append(f.calls, fmt.Sprintf("follow:%s:%d->%d", after.Recurrence.ID, before.Amount, after.Amount))
+	return f.err
+}
+
+func (f *fakeSeries) EndBefore(_ context.Context, o domain.Transaction) error {
+	f.calls = append(f.calls, "end:"+o.Recurrence.ID+"@"+o.Recurrence.Date.String())
+	return f.err
+}
+
+func (f *fakeSeries) Remove(_ context.Context, o domain.Transaction) error {
+	f.calls = append(f.calls, "remove:"+o.Recurrence.ID)
+	return f.err
+}
+
 type fixture struct {
 	svc     *Service
 	store   *memStore
 	refs    *refs
 	metrics *countingMetrics
+	series  *fakeSeries
 }
 
 func newFixture() fixture {
@@ -202,9 +258,9 @@ func newFixture() fixture {
 			"salary": {ID: "salary", UserID: "u1", Kind: domain.CategoryIncome},
 		},
 	}
-	store, metrics := newMemStore(), &countingMetrics{}
-	svc := NewService(store, r, categoryFinder{r}, Options{Now: func() time.Time { return t0 }, Metrics: metrics})
-	return fixture{svc: svc, store: store, refs: r, metrics: metrics}
+	store, metrics, series := newMemStore(), &countingMetrics{}, &fakeSeries{}
+	svc := NewService(store, r, categoryFinder{r}, Options{Now: func() time.Time { return t0 }, Metrics: metrics, Series: series})
+	return fixture{svc: svc, store: store, refs: r, metrics: metrics, series: series}
 }
 
 func expense() domain.TransactionInput {

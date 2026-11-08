@@ -155,13 +155,19 @@ type profiledOp struct {
 // on the transactions collection, so a test can tell how much it read.
 func profile(t *testing.T, db *mongo.Database, fn func()) profiledOp {
 	t.Helper()
+	return profileOn(t, db, repo.CollTransactions, fn)
+}
+
+// profileOn is profile for collection coll.
+func profileOn(t *testing.T, db *mongo.Database, coll string, fn func()) profiledOp {
+	t.Helper()
 	ctx := context.Background()
 	require.NoError(t, db.RunCommand(ctx, bson.D{{Key: "profile", Value: 0}}).Err())
 	require.NoError(t, db.Collection("system.profile").Drop(ctx))
 	require.NoError(t, db.RunCommand(ctx, bson.D{{Key: "profile", Value: 2}}).Err())
 	fn()
 	require.NoError(t, db.RunCommand(ctx, bson.D{{Key: "profile", Value: 0}}).Err())
-	cur, err := db.Collection("system.profile").Find(ctx, bson.D{{Key: "ns", Value: db.Name() + "." + repo.CollTransactions}})
+	cur, err := db.Collection("system.profile").Find(ctx, bson.D{{Key: "ns", Value: db.Name() + "." + coll}})
 	require.NoError(t, err)
 	var ops []profiledOp
 	require.NoError(t, cur.All(ctx, &ops))

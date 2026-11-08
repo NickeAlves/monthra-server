@@ -137,7 +137,7 @@ func TestApplyInScopeShiftsTheDays(t *testing.T) {
 
 	// A day after the closing: this installment and the next ones move to
 	// the next invoice.
-	next, changed, err := TransactionPatch{Date: ptr("2026-12-26")}.ApplyInScope(ts[1], ScopeFuture, ts[2:],
+	next, changed, err := TransactionPatch{Date: ptr("2026-12-26")}.touched(ts[1], ScopeFuture, ts[2:],
 		TransactionRefs{Account: txCard}, later)
 	require.NoError(t, err)
 	assert.Equal(t, "2026-12-26", next.Date.String())
@@ -151,14 +151,14 @@ func TestApplyInScopeShiftsTheDays(t *testing.T) {
 
 	// With every installment, those before move too; within the cycle, the
 	// invoices stay.
-	_, changed, err = TransactionPatch{Date: ptr("2026-12-10")}.ApplyInScope(ts[1], ScopeAll, []Transaction{ts[0], ts[2], ts[3]},
+	_, changed, err = TransactionPatch{Date: ptr("2026-12-10")}.touched(ts[1], ScopeAll, []Transaction{ts[0], ts[2], ts[3]},
 		TransactionRefs{Account: txCard}, later)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"2026-12-10", "2026-11-10", "2027-01-10", "2027-02-10"}, dates(changed))
 	assert.Equal(t, []string{"2027-01", "2026-12", "2027-02", "2027-03"}, invoices(changed))
 
 	// Naming the invoice moves the invoices only.
-	_, changed, err = TransactionPatch{InvoiceMonth: ptr("2027-02")}.ApplyInScope(ts[1], ScopeFuture, ts[2:],
+	_, changed, err = TransactionPatch{InvoiceMonth: ptr("2027-02")}.touched(ts[1], ScopeFuture, ts[2:],
 		TransactionRefs{Account: txCard}, later)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"2027-02", "2027-03", "2027-04"}, invoices(changed))
@@ -169,7 +169,7 @@ func TestApplyInScopeCopiesTheChanges(t *testing.T) {
 	ts := group(t, purchaseIn(3, "2027-01-31", 100000), expenseRefs)
 	others := []Transaction{ts[0], ts[2]}
 
-	_, changed, err := TransactionPatch{Amount: ptr(int64(40000))}.ApplyInScope(ts[1], ScopeAll, others, TransactionRefs{}, txNow)
+	_, changed, err := TransactionPatch{Amount: ptr(int64(40000))}.touched(ts[1], ScopeAll, others, TransactionRefs{}, txNow)
 	require.NoError(t, err)
 	assert.Equal(t, []int64{40000, 40000, 40000}, amounts(changed), "the amount of each installment")
 
@@ -180,7 +180,7 @@ func TestApplyInScopeCopiesTheChanges(t *testing.T) {
 		AccountID: ptr("bank"), CategoryID: ptr("food"), Amount: ptr(int64(33333)), Date: ptr("2027-02-28"),
 		Description: ptr("Sofa"), Tags: ptr([]string{"breakfast", "work"}),
 	}
-	next, changed, err := form.ApplyInScope(ts[1], ScopeAll, others, TransactionRefs{}, txNow)
+	next, changed, err := form.touched(ts[1], ScopeAll, others, TransactionRefs{}, txNow)
 	require.NoError(t, err)
 	assert.Equal(t, "Sofa", next.Description)
 	require.Len(t, changed, 3)
@@ -192,17 +192,17 @@ func TestApplyInScopeCopiesTheChanges(t *testing.T) {
 
 	_, changed, err = TransactionPatch{
 		CategoryID: ptr("rent"), Tags: ptr([]string{"home"}),
-	}.ApplyInScope(ts[1], ScopeFuture, ts[2:], TransactionRefs{Category: &Category{ID: "rent", Kind: CategoryExpense}}, txNow)
+	}.touched(ts[1], ScopeFuture, ts[2:], TransactionRefs{Category: &Category{ID: "rent", Kind: CategoryExpense}}, txNow)
 	require.NoError(t, err)
 	require.Len(t, changed, 2)
 	assert.Equal(t, "rent", changed[1].CategoryID)
 	assert.Equal(t, []string{"home"}, changed[1].Tags)
 
-	_, changed, err = TransactionPatch{Description: ptr("Café da manhã")}.ApplyInScope(ts[1], ScopeAll, others, TransactionRefs{}, txNow)
+	_, changed, err = TransactionPatch{Description: ptr("Café da manhã")}.touched(ts[1], ScopeAll, others, TransactionRefs{}, txNow)
 	require.NoError(t, err)
 	assert.Empty(t, changed, "nothing changed")
 
-	_, changed, err = TransactionPatch{Amount: ptr(int64(1))}.ApplyInScope(ts[1], ScopeThis, others, TransactionRefs{}, txNow)
+	_, changed, err = TransactionPatch{Amount: ptr(int64(1))}.touched(ts[1], ScopeThis, others, TransactionRefs{}, txNow)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"i2"}, []string{changed[0].ID}, "this one only")
 	require.Len(t, changed, 1)
@@ -214,15 +214,15 @@ func TestApplyInScopeKeepsAPurchaseOnOneAccount(t *testing.T) {
 	ts := group(t, in, TransactionRefs{Account: txCard, Category: txFood})
 	toBank := TransactionPatch{AccountID: ptr("bank")}
 	for _, scope := range []EditScope{ScopeThis, ScopeFuture} {
-		_, _, err := toBank.ApplyInScope(ts[1], scope, ts[2:], TransactionRefs{Account: txBank}, txNow)
+		_, _, err := toBank.touched(ts[1], scope, ts[2:], TransactionRefs{Account: txBank}, txNow)
 		assert.Equal(t, map[string]string{"scope": CodeInvalid}, fieldsOf(t, err), scope)
 	}
 
-	_, changed, err := TransactionPatch{AccountID: ptr("card")}.ApplyInScope(ts[1], ScopeFuture, ts[2:], TransactionRefs{}, txNow)
+	_, changed, err := TransactionPatch{AccountID: ptr("card")}.touched(ts[1], ScopeFuture, ts[2:], TransactionRefs{}, txNow)
 	require.NoError(t, err)
 	assert.Empty(t, changed, "the account it is on")
 
-	_, changed, err = toBank.ApplyInScope(ts[1], ScopeAll, []Transaction{ts[0], ts[2]}, TransactionRefs{Account: txBank}, txNow)
+	_, changed, err = toBank.touched(ts[1], ScopeAll, []Transaction{ts[0], ts[2]}, TransactionRefs{Account: txBank}, txNow)
 	require.NoError(t, err)
 	require.Len(t, changed, 3)
 	for _, c := range changed {
@@ -232,7 +232,7 @@ func TestApplyInScopeKeepsAPurchaseOnOneAccount(t *testing.T) {
 
 	single, err := NewTransaction("u1", cardPurchase("2026-11-24", ""), TransactionRefs{Account: txCard, Category: txFood}, txNow)
 	require.NoError(t, err)
-	next, changed, err := toBank.ApplyInScope(single, ScopeThis, nil, TransactionRefs{Account: txBank}, txNow)
+	next, changed, err := toBank.touched(single, ScopeThis, nil, TransactionRefs{Account: txBank}, txNow)
 	require.NoError(t, err, "a transaction outside a purchase moves alone")
 	assert.Equal(t, "bank", next.AccountID)
 	assert.Len(t, changed, 1)
@@ -240,9 +240,37 @@ func TestApplyInScopeKeepsAPurchaseOnOneAccount(t *testing.T) {
 
 func TestApplyInScopeValidation(t *testing.T) {
 	ts := group(t, purchaseIn(12, "2100-01-10", 1200), expenseRefs)
-	_, _, err := TransactionPatch{Date: ptr("2100-02-10")}.ApplyInScope(ts[0], ScopeAll, ts[1:], TransactionRefs{}, txNow)
+	_, _, err := TransactionPatch{Date: ptr("2100-02-10")}.touched(ts[0], ScopeAll, ts[1:], TransactionRefs{}, txNow)
 	assert.Equal(t, map[string]string{"date": CodeOutOfRange}, fieldsOf(t, err), "the last one would fall in 2101")
 
-	_, _, err = TransactionPatch{Amount: ptr(int64(0))}.ApplyInScope(ts[0], ScopeAll, ts[1:], TransactionRefs{}, txNow)
+	_, _, err = TransactionPatch{Amount: ptr(int64(0))}.touched(ts[0], ScopeAll, ts[1:], TransactionRefs{}, txNow)
 	assert.Equal(t, map[string]string{"amount": CodeOutOfRange}, fieldsOf(t, err), "the addressed one is checked as always")
+}
+
+// touched runs ApplyInScope and returns what it changed in one list: the
+// addressed transaction first when it changed, then the others.
+func (p TransactionPatch) touched(current Transaction, scope EditScope, others []Transaction, refs TransactionRefs, now time.Time) (Transaction, []Transaction, error) {
+	edit, err := p.ApplyInScope(current, scope, others, refs, now)
+	if err != nil {
+		return Transaction{}, nil, err
+	}
+	var out []Transaction
+	if edit.Changed {
+		out = append(out, edit.Next)
+	}
+	return edit.Next, append(out, edit.Others...), nil
+}
+
+func TestApplyInScopeReturnsTheAddressedOneApart(t *testing.T) {
+	ts := group(t, purchaseIn(3, "2027-01-31", 90000), expenseRefs)
+	edit, err := TransactionPatch{Description: ptr("Sofa")}.ApplyInScope(ts[1], ScopeAll, []Transaction{ts[0], ts[2]}, TransactionRefs{}, txNow)
+	require.NoError(t, err)
+	assert.True(t, edit.Changed)
+	assert.Equal(t, "i2", edit.Next.ID)
+	assert.Equal(t, []string{"i1", "i3"}, []string{edit.Others[0].ID, edit.Others[1].ID}, "the addressed one is not among the others")
+
+	edit, err = TransactionPatch{Description: ptr("Café da manhã")}.ApplyInScope(ts[1], ScopeAll, []Transaction{ts[0], ts[2]}, TransactionRefs{}, txNow)
+	require.NoError(t, err)
+	assert.False(t, edit.Changed)
+	assert.Empty(t, edit.Others)
 }

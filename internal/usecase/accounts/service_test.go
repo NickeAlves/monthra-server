@@ -426,3 +426,67 @@ func TestNewServiceDefaults(t *testing.T) {
 	assert.Equal(t, DefaultMaxAccounts, svc.max)
 	assert.WithinDuration(t, time.Now(), svc.now(), time.Minute)
 }
+
+// fakeRecurrences tells which accounts recurrences name, and records the
+// days their occurrences were created up to.
+type fakeRecurrences struct {
+	used, active map[string]bool
+	err          error
+	materialized []string
+}
+
+func (r *fakeRecurrences) Materialize(_ context.Context, userID string, asOf domain.Date) {
+	r.materialized = append(r.materialized, userID+"@"+asOf.String())
+}
+
+func (r *fakeRecurrences) AccountUsage(_ context.Context, _, id string) (bool, bool, error) {
+	return r.used[id], r.active[id], r.err
+}
+
+func TestAccountsOfRecurrences(t *testing.T) {
+	store := newMemStore()
+	ledger := &fakeLedger{inUse: map[string]bool{}, invoices: []domain.InvoiceSums{}}
+	recurrences := &fakeRecurrences{used: map[string]bool{"a1": true, "a2": true}, active: map[string]bool{"a1": true}}
+	svc := NewService(store, ledger, Options{Now: func() time.Time { return t0 }, Recurrences: recurrences})
+	ctx := context.Background()
+	for _, name := range []string{"A", "B", "C"} {
+		_, err := svc.Create(ctx, "u1", checking(name))
+		require.NoError(t, err)
+	}
+	card, err := svc.Create(ctx, "u1", domain.AccountInput{
+		Name: "Card", Type: "credit_card", Currency: "BRL", Card: &domain.CardSettings{ClosingDay: 25, DueDay: 5},
+	})
+	require.NoError(t, err)
+
+	// Every balance counts the occurrences due up to the reader's today.
+	asOf, err := domain.ParseDate("2026-11-09")
+	require.NoError(t, err)
+	_, err = svc.List(ctx, "u1", false, asOf)
+	require.NoError(t, err)
+	_, err = svc.Get(ctx, "u1", "a2", domain.Date{})
+	require.NoError(t, err)
+	_, err = svc.Invoices(ctx, "u1", card.ID, domain.Month{}, domain.Month{}, asOf)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"u1@2026-11-09", "u1@0001-01-01", "u1@2026-11-09"}, recurrences.materialized)
+
+	// An active recurrence keeps its account from being archived; an ended
+	// one does not, but still keeps it from being deleted.
+	_, err = svc.Update(ctx, "u1", "a1", domain.AccountPatch{Archived: ptr(true)}, domain.Date{})
+	assert.ErrorIs(t, err, domain.ErrUsedByRecurrence)
+	_, err = svc.Update(ctx, "u1", "a1", domain.AccountPatch{Name: ptr("Rent")}, domain.Date{})
+	require.NoError(t, err, "other edits pass")
+	archived, err := svc.Update(ctx, "u1", "a2", domain.AccountPatch{Archived: ptr(true)}, domain.Date{})
+	require.NoError(t, err)
+	assert.True(t, archived.Archived())
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a2"), domain.ErrUsedByRecurrence)
+	ledger.inUse["a2"] = true
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a2"), domain.ErrAccountInUse, "transactions first")
+	require.NoError(t, svc.Delete(ctx, "u1", "a3"))
+
+	recurrences.err = errors.New("mongo down")
+	_, err = svc.Update(ctx, "u1", "a3x", domain.AccountPatch{Archived: ptr(true)}, domain.Date{})
+	assert.ErrorIs(t, err, domain.ErrNotFound, "the account first")
+	_, err = svc.Update(ctx, "u1", "a1", domain.AccountPatch{Archived: ptr(true)}, domain.Date{})
+	assert.ErrorIs(t, err, recurrences.err)
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a1"), recurrences.err)
+}

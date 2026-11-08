@@ -34,9 +34,10 @@ const (
 	ErrMFANotEnabled        Key = "mfa_not_enabled"
 	ErrMFASetupRequired     Key = "mfa_setup_required"
 
-	ErrLimitReached  Key = "limit_reached"
-	ErrAccountInUse  Key = "account_in_use"
-	ErrCategoryInUse Key = "category_in_use"
+	ErrLimitReached     Key = "limit_reached"
+	ErrAccountInUse     Key = "account_in_use"
+	ErrCategoryInUse    Key = "category_in_use"
+	ErrUsedByRecurrence Key = "used_by_recurrence"
 )
 
 // Message is a translated title and detail.
@@ -187,6 +188,11 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Categoria com lançamentos", "Esta categoria tem lançamentos. Escolha outra categoria do mesmo tipo para movê-los antes de apagar."},
 		EsES: {"Categoría con movimientos", "Esta categoría tiene movimientos. Elige otra categoría del mismo tipo para moverlos antes de eliminarla."},
 		EnUS: {"Category in use", "This category has transactions. Pick another category of the same kind to move them to before deleting it."},
+	},
+	ErrUsedByRecurrence: {
+		PtBR: {"Usado por uma recorrência", "Uma recorrência usa este registro. Encerre a recorrência ou troque a conta ou a categoria dela antes."},
+		EsES: {"Usado por una recurrencia", "Una recurrencia usa este registro. Finaliza la recurrencia o cambia su cuenta o su categoría antes."},
+		EnUS: {"Used by a recurrence", "A recurrence uses this record. End the recurrence or change its account or category first."},
 	},
 }
 

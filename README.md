@@ -200,7 +200,19 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 - **Scope:** `PATCH` and `DELETE /api/v1/transactions/{id}?scope=this|future|all` (`this` by default) reach the installment, it and the ones numbered after it, or the whole purchase; on a transaction outside a purchase, that one alone.
 - **Scoped edits:** the other installments take the changes made to the one addressed: `amount` (each installment's), category, description, tags and account take its new value; a new day moves each by the same months, on the new day; a new day, account or invoice gives installment *j* the addressed one's invoice plus *j*-*k*. A field sent unchanged changes nothing, so clients may send their whole form. A purchase stays on one account: `accountId` needs `scope=all` (`422 scope: invalid` otherwise).
 - **Kept as created:** numbers never change (deleting some leaves "3/12"), and so does the count: to change it, delete the purchase (`scope=all`) and create it again.
-- **No multi-document transactions:** a failed insert removes the installments already stored (once, best effort); a scoped edit writes the changed installments in one unordered bulk write, so sending the same edit again completes an interrupted one. One partial index `{user_id, installment.group_id, date, _id}` serves the listing and the group reads, which touch at most 48 entries.
+- **No multi-document transactions:** a failed insert removes the installments already stored (once, best effort); a scoped edit writes the other installments in one unordered bulk write and the addressed one last, so until it is stored, sending the same edit again finds the same changes and completes an interrupted one. One partial index `{user_id, installment.group_id, date, _id}` serves the listing and the group reads, which touch at most 48 entries.
+
+## Recurrences
+
+`/api/v1/recurrences` holds the transactions that repeat (rent, subscriptions, a salary, a weekly saving): an expense, income or transfer with the fields of a transaction (validated the same way on its start), and a simplified RRULE. Up to 200 per user, listed whole.
+
+- **Rule:** `frequency` (`daily`, `weekly`, `monthly`, `yearly`) every `interval` (1-99) from `startDate`, counted from the start (a monthly rule from January 31 falls on February 28, then March 31; a yearly one from February 29 on February 28 of common years). It ends on `endDate`, after `count` occurrences (1-1000, stored as that `endDate`), or never.
+- **Occurrences are materialized lazily:** every read of transactions, accounts (balances), invoices and recurrences first creates the occurrences due up to `?asOf` (the client's local today, clamped to a day around today in UTC; today in UTC when absent). Each is a transaction with `recurrence: {id, occurrenceDate}`. A start in the past creates the history at once, at most 500 occurrences per read (the next reads create the rest). A read never fails because of it: a failure is logged and the read goes on.
+- **Idempotent without transactions:** a pass stores the occurrences first (unordered, the unique index `{recurrence_id, occurrence_date}` skipping the ones already there) and then advances the recurrence's `next_date` with a compare-and-set, so an interrupted pass or two readers at once create each occurrence once. Ended recurrences have no `next_date`; the partial index `{user_id, next_date}` holds the active ones, so the read before each listing touches only what is due.
+- **Next ones:** `nextDate` and `lastDate` on each recurrence; `GET /api/v1/recurrences/upcoming?to=` projects the occurrences not created yet (30 days by default, up to 366, at most 1000), with the card invoices, stored nowhere.
+- **Editing the rule:** `PATCH /api/v1/recurrences/{id}` changes the next occurrences only, never the transactions already created. A new `startDate` must come after `lastDate`, so a series never covers its past again. `DELETE` stops the recurrence and keeps its transactions.
+- **Editing occurrences:** `PATCH /api/v1/transactions/{id}?scope=future|all` on an occurrence gives the later (or all) occurrences and the recurrence the changes made to the one addressed (amounts, category, description, tags, accounts); moving to another account is allowed and each occurrence picks its invoice again by its day. Day and invoice change with `scope=this` only. `DELETE ?scope=future` ends the rule before the occurrence and deletes the later ones; `?scope=all` deletes the recurrence and all its occurrences. The writes go others, then the recurrence, then the addressed one, so a resend completes an interrupted edit.
+- **Guards:** an account an active recurrence names cannot be archived, and one any recurrence names cannot be deleted (`409 used_by_recurrence`); a category one names needs `reassignTo` to be deleted, which moves the recurrences too. `DELETE /me` erases the recurrences before the transactions.
 
 ## Browser security
 
@@ -224,7 +236,7 @@ internal/app/         wiring, servers and graceful shutdown
 internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
-internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/)
+internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/, recurrences/)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates
