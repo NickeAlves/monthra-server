@@ -117,17 +117,46 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput, c Cl
 	return nil
 }
 
-// revokeAllSessions ends the sessions of userID but except, in MongoDB (no
-// more refreshes) and in the Redis denylist (no more access tokens).
+// revokeAllSessions ends the sessions of userID but except, in the Redis
+// denylist (no more access tokens) and in MongoDB (no more refreshes).
+//
+// Redis goes first: when it fails, nothing is revoked in MongoDB yet, so a
+// retry finds the same sessions and denies their access tokens. Sessions
+// opened between the two steps are denied after.
 func (s *Service) revokeAllSessions(ctx context.Context, userID, except string, now time.Time) error {
-	ids, err := s.Sessions.RevokeAllForUser(ctx, userID, except, now)
+	ttl := s.Tokens.TTL() + core.ClockLeeway
+	ids, err := s.Sessions.ActiveIDs(ctx, userID, except, now)
+	if err != nil {
+		return fmt.Errorf("find sessions: %w", err)
+	}
+	if err := s.Revocations.RevokeSessions(ctx, ids, ttl); err != nil {
+		return unavailable(err)
+	}
+	revoked, err := s.Sessions.RevokeAllForUser(ctx, userID, except, now)
 	if err != nil {
 		return fmt.Errorf("revoke sessions: %w", err)
 	}
-	if err := s.Revocations.RevokeSessions(ctx, ids, s.Tokens.TTL()+core.ClockLeeway); err != nil {
-		return unavailable(err)
+	if late := missing(revoked, ids); len(late) > 0 {
+		if err := s.Revocations.RevokeSessions(ctx, late, ttl); err != nil {
+			return unavailable(err)
+		}
 	}
 	return nil
+}
+
+// missing returns the ids of got that are not in known.
+func missing(got, known []string) []string {
+	seen := make(map[string]bool, len(known))
+	for _, id := range known {
+		seen[id] = true
+	}
+	var out []string
+	for _, id := range got {
+		if !seen[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // notify sends a security notice to the owner, with a reset link in case

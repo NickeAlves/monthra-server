@@ -41,11 +41,12 @@ func cloneTime(t *time.Time) *time.Time {
 func idFor(prefix string, n int) string { return fmt.Sprintf("%s%023d", prefix, n) }
 
 type memUsers struct {
-	mu     sync.Mutex
-	byID   map[string]domain.User
-	err    error
-	seq    int
-	hashes []string
+	mu        sync.Mutex
+	byID      map[string]domain.User
+	err       error
+	deleteErr error
+	seq       int
+	hashes    []string
 }
 
 func (m *memUsers) Create(_ context.Context, u domain.User) (domain.User, error) {
@@ -196,6 +197,22 @@ func (m *memUsers) UpdatePasswordHash(_ context.Context, id, hash string, _ time
 	return nil
 }
 
+func (m *memUsers) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	delete(m.byID, id)
+	return nil
+}
+
+func (m *memUsers) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.byID)
+}
+
 func (m *memUsers) only() domain.User {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -284,6 +301,57 @@ func (m *memSessions) RevokeAllForUser(_ context.Context, userID, except string,
 		}
 	}
 	return ids, nil
+}
+
+func (m *memSessions) ActiveIDs(_ context.Context, userID, except string, now time.Time) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	var ids []string
+	for id, s := range m.byID {
+		if s.UserID == userID && id != except && s.Active(now) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func (m *memSessions) ListActive(_ context.Context, userID string, now time.Time, limit int) ([]domain.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	var out []domain.Session
+	for _, s := range m.byID {
+		if s.UserID == userID && s.Active(now) {
+			out = append(out, s)
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.Session) int { return b.LastUsedAt.Compare(a.LastUsedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *memSessions) RevokeForUser(_ context.Context, userID, id string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return false, m.err
+	}
+	s, ok := m.byID[id]
+	if !ok || s.UserID != userID || !at.Before(s.ExpiresAt) {
+		return false, nil
+	}
+	if s.RevokedAt == nil {
+		s.RevokedAt = ptr(at)
+	}
+	m.byID[id] = s
+	return true, nil
 }
 
 func (m *memSessions) active(userID string, at time.Time) int {
@@ -702,6 +770,28 @@ func newSealer(active string) *aead.Sealer {
 	return s
 }
 
+// eraseLog records the order in which erasers ran, and can fail one.
+type eraseLog struct {
+	mu   sync.Mutex
+	ran  []string
+	fail string
+}
+
+type namedEraser struct {
+	name string
+	log  *eraseLog
+}
+
+func (e namedEraser) EraseUserData(_ context.Context, userID string) error {
+	e.log.mu.Lock()
+	defer e.log.mu.Unlock()
+	if e.log.fail == e.name {
+		return errors.New(e.name + " down")
+	}
+	e.log.ran = append(e.log.ran, e.name+":"+userID)
+	return nil
+}
+
 // harness wires a Service to in-memory fakes.
 type harness struct {
 	*Service
@@ -722,6 +812,7 @@ type harness struct {
 	mail        *mailbox
 	audit       *auditTrail
 	metrics     *counters
+	erased      *eraseLog
 }
 
 func newHarness() *harness {
@@ -730,12 +821,13 @@ func newHarness() *harness {
 		clock: c, users: &memUsers{}, sessions: &memSessions{}, refresh: &memRefresh{}, authTokens: &memAuthTokens{},
 		revocations: &memRevocations{}, lockout: &memLockout{policy: core.DefaultLockoutPolicy}, challenges: &memChallenges{}, limiter: &memLimiter{}, mailLimiter: &memLimiter{},
 		captcha: &fakeCaptcha{}, breach: &fakeBreach{}, hasher: &fakeHasher{}, tokens: &fakeTokens{clock: c},
-		mail: &mailbox{}, audit: &auditTrail{}, metrics: &counters{},
+		mail: &mailbox{}, audit: &auditTrail{}, metrics: &counters{}, erased: &eraseLog{},
 	}
 	h.Service = NewService(Deps{
 		Users: h.users, Sessions: h.sessions, RefreshTokens: h.refresh, AuthTokens: h.authTokens,
 		Revocations: h.revocations, Lockout: h.lockout, MFAChallenges: h.challenges, Sealer: newSealer("e1"), EmailLimit: h.limiter, MailLimit: h.mailLimiter, Captcha: h.captcha,
 		Breach: h.breach, Hasher: h.hasher, Tokens: h.tokens, Mailer: h.mail, Auditor: h.audit, Metrics: h.metrics,
+		Erasers: []UserDataEraser{namedEraser{"transactions", h.erased}, namedEraser{"sessions", h.erased}},
 	}, Options{
 		RefreshTTL: 30 * 24 * time.Hour, EmailTokenTTL: 30 * time.Minute, ResetTokenTTL: 15 * time.Minute,
 		AppURL: config.PublicURL("https://app.monthra.example"), MFAIssuer: "Monthra (test)", Lockout: core.DefaultLockoutPolicy,

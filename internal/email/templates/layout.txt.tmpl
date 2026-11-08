@@ -3,7 +3,7 @@ Monthra
 {{.Heading}}
 {{range .Lines}}
 {{.}}
-{{end}}
+{{end}}{{if and .Action .Link}}
 {{.Action}}: {{.Link}}
-
+{{end}}
 {{.Footer}}

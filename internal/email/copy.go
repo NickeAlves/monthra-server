@@ -3,7 +3,7 @@ package email
 import "github.com/NickeAlves/monthra-server/internal/i18n"
 
 // copyText is the translated text of one template. "{minutes}" in a line is
-// replaced by the link lifetime.
+// replaced by the link lifetime. A template without Action has no button.
 type copyText struct {
 	Subject string
 	Heading string
@@ -208,6 +208,35 @@ var catalog = map[Template]map[i18n.Locale]copyText{
 			},
 			Action: "Reset password",
 			Footer: "If it was you, there is nothing else to do.",
+		},
+	},
+	TemplateAccountDeleted: {
+		i18n.PtBR: {
+			Subject: "Sua conta no Monthra foi excluída",
+			Heading: "Conta excluída",
+			Lines: []string{
+				"A sua conta no Monthra foi excluída, junto com os dados dela, e todas as sessões foram encerradas.",
+				"Só os registros de segurança de acesso ficam guardados, pelo prazo que a lei exige, e depois são apagados.",
+			},
+			Footer: "Se não foi você, alguém sabia a sua senha: troque-a nos outros serviços em que você usa a mesma.",
+		},
+		i18n.EsES: {
+			Subject: "Tu cuenta de Monthra fue eliminada",
+			Heading: "Cuenta eliminada",
+			Lines: []string{
+				"Tu cuenta de Monthra fue eliminada, junto con sus datos, y se cerraron todas las sesiones.",
+				"Solo se conservan los registros de seguridad de acceso, durante el plazo que exige la ley, y luego se borran.",
+			},
+			Footer: "Si no fuiste tú, alguien conocía tu contraseña: cámbiala en los demás servicios donde uses la misma.",
+		},
+		i18n.EnUS: {
+			Subject: "Your Monthra account was deleted",
+			Heading: "Account deleted",
+			Lines: []string{
+				"Your Monthra account was deleted, along with its data, and every session was signed out.",
+				"Only the security access records are kept, for as long as the law requires, and then erased.",
+			},
+			Footer: "If it was not you, someone knew your password: change it on any other service where you use the same one.",
 		},
 	},
 }

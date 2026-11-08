@@ -20,6 +20,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/http/middleware"
 	"github.com/NickeAlves/monthra-server/internal/i18n"
 	"github.com/NickeAlves/monthra-server/internal/observability"
+	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
 )
 
 // goodTokens accepts the token "good" as user u1.
@@ -49,6 +50,27 @@ func (profileStub) UpdatePreferences(context.Context, string, domain.Preferences
 	return domain.Preferences{}, &domain.ValidationError{Fields: []domain.FieldError{{Field: "theme", Code: domain.CodeInvalid}}}
 }
 
+type accountStub struct{}
+
+func (accountStub) ChangePassword(context.Context, auth.Principal, authuc.ChangePasswordInput, authuc.Client) error {
+	return nil
+}
+func (accountStub) ListSessions(context.Context, auth.Principal) ([]authuc.SessionInfo, error) {
+	return nil, nil
+}
+func (accountStub) RevokeSession(_ context.Context, _ auth.Principal, id string, _ authuc.Client) (bool, error) {
+	if id != "s2" {
+		return false, authuc.ErrSessionNotFound
+	}
+	return false, nil
+}
+func (accountStub) RevokeOtherSessions(context.Context, auth.Principal, authuc.Client) error {
+	return nil
+}
+func (accountStub) DeleteAccount(context.Context, auth.Principal, authuc.DeleteAccountInput, authuc.Client) error {
+	return nil
+}
+
 type storedLocales map[string]i18n.Locale
 
 func (s storedLocales) Locale(_ context.Context, userID string) (i18n.Locale, bool) {
@@ -75,7 +97,7 @@ func newMeRouter(t *testing.T) http.Handler {
 
 		Auth:            &handler.Auth{Service: okAuth{}, Cookies: cookies, Logger: logger},
 		Authenticator:   middleware.AuthOptions{Tokens: goodTokens{}, Revocations: noRevocations{}, Cookies: cookies, Logger: logger},
-		Me:              &handler.Me{Profile: profileStub{}, Cookies: cookies, Logger: logger},
+		Me:              &handler.Me{Profile: profileStub{}, Account: accountStub{}, Cookies: cookies, Logger: logger},
 		Locales:         storedLocales{"u1": i18n.EnUS},
 		AuthRateByIP:    perMinute,
 		RefreshRateByIP: perMinute,
@@ -85,20 +107,33 @@ func newMeRouter(t *testing.T) http.Handler {
 
 func TestMeRoutesNeedAuthentication(t *testing.T) {
 	h := newMeRouter(t)
-	for _, rt := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/me"},
-		{http.MethodPatch, "/api/v1/me"},
-		{http.MethodGet, "/api/v1/me/preferences"},
-		{http.MethodPatch, "/api/v1/me/preferences"},
-	} {
-		w := do(h, rt.method, rt.path, `{}`, jsonHeaders)
+	routes := []struct {
+		method, path, body string
+		want               int
+	}{
+		{http.MethodGet, "/api/v1/me", "", http.StatusOK},
+		{http.MethodPatch, "/api/v1/me", `{"name":"Bia"}`, http.StatusOK},
+		{http.MethodDelete, "/api/v1/me", `{"password":"secret"}`, http.StatusNoContent},
+		{http.MethodGet, "/api/v1/me/preferences", "", http.StatusOK},
+		{http.MethodPatch, "/api/v1/me/preferences", `{"theme":"dark"}`, http.StatusUnprocessableEntity},
+		{http.MethodPost, "/api/v1/me/password", `{"currentPassword":"a","newPassword":"b"}`, http.StatusNoContent},
+		{http.MethodGet, "/api/v1/me/sessions", "", http.StatusOK},
+		{http.MethodDelete, "/api/v1/me/sessions", "", http.StatusNoContent},
+		{http.MethodDelete, "/api/v1/me/sessions/s2", "", http.StatusNoContent},
+		{http.MethodDelete, "/api/v1/me/sessions/s9", "", http.StatusNotFound},
+	}
+	for _, rt := range routes {
+		w := do(h, rt.method, rt.path, rt.body, jsonHeaders)
 		assert.Equal(t, http.StatusUnauthorized, w.Code, rt.method+" "+rt.path)
 		assert.Equal(t, "pt-BR", w.Header().Get("Content-Language"), "before authentication, Accept-Language (none: pt-BR)")
 	}
 
-	bearer := map[string]string{"Authorization": "Bearer good"}
-	w := do(h, http.MethodGet, "/api/v1/me", "", bearer)
-	require.Equal(t, http.StatusOK, w.Code)
+	headers := map[string]string{"Authorization": "Bearer good", "Content-Type": "application/json"}
+	for _, rt := range routes {
+		w := do(h, rt.method, rt.path, rt.body, headers)
+		assert.Equal(t, rt.want, w.Code, rt.method+" "+rt.path)
+	}
+	w := do(h, http.MethodGet, "/api/v1/me", "", headers)
 	assert.Contains(t, w.Body.String(), `"name":"Ana"`)
 }
 

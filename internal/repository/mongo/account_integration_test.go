@@ -90,11 +90,10 @@ func TestSessionsListAndRevokeForUser(t *testing.T) {
 	assert.ErrorIs(t, err, domain.ErrNotFound)
 
 	for name, id := range map[string]string{
-		"another user's":  foreign.ID,
-		"expired":         expired.ID,
-		"already revoked": revoked.ID,
-		"unknown":         bson.NewObjectID().Hex(),
-		"malformed":       "bad",
+		"another user's": foreign.ID,
+		"expired":        expired.ID,
+		"unknown":        bson.NewObjectID().Hex(),
+		"malformed":      "bad",
 	} {
 		ok, err := sessions.RevokeForUser(ctx, owner, id, now)
 		require.NoError(t, err, name)
@@ -110,9 +109,27 @@ func TestSessionsListAndRevokeForUser(t *testing.T) {
 	got, err = sessions.ByID(ctx, older.ID)
 	require.NoError(t, err)
 	assert.False(t, got.Active(now.Add(time.Second)))
-	ok, err = sessions.RevokeForUser(ctx, owner, older.ID, now.Add(time.Second))
+	ok, err = sessions.RevokeForUser(ctx, owner, older.ID, now.Add(time.Minute))
 	require.NoError(t, err)
-	assert.False(t, ok, "revoking twice reports false")
+	assert.True(t, ok, "revoking again is safe to retry")
+	got, err = sessions.ByID(ctx, older.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.RevokedAt)
+	assert.Equal(t, now.Add(time.Second), got.RevokedAt.UTC(), "keeps the first date")
+	ok, err = sessions.RevokeForUser(ctx, owner, revoked.ID, now)
+	require.NoError(t, err)
+	assert.True(t, ok, "an owned, revoked but unexpired session")
+
+	ids, err := sessions.ActiveIDs(ctx, owner, "", now)
+	require.NoError(t, err)
+	assert.Equal(t, []string{newer.ID}, ids)
+	ids, err = sessions.ActiveIDs(ctx, owner, newer.ID, now)
+	require.NoError(t, err)
+	assert.Empty(t, ids, "except leaves the current session out")
+	_, err = sessions.ActiveIDs(ctx, owner, "bad", now)
+	assert.ErrorIs(t, err, domain.ErrNotFound)
+	_, err = sessions.ActiveIDs(ctx, "bad", "", now)
+	assert.ErrorIs(t, err, domain.ErrNotFound)
 }
 
 func TestUserEraser(t *testing.T) {

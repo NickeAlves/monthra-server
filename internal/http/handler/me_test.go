@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/domain"
 	"github.com/NickeAlves/monthra-server/internal/http/cookie"
 	"github.com/NickeAlves/monthra-server/internal/i18n"
+	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
 	"github.com/NickeAlves/monthra-server/internal/usecase/profile"
 )
 
@@ -180,6 +182,153 @@ func TestPreferencesRoutes(t *testing.T) {
 
 	for _, hf := range []http.HandlerFunc{h.GetPreferences, h.UpdatePreferences} {
 		w := serve(hf, request(http.MethodGet, "/api/v1/me/preferences", `{}`))
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	}
+}
+
+type fakeAccount struct {
+	err       error
+	current   bool
+	sessions  []authuc.SessionInfo
+	principal auth.Principal
+	change    authuc.ChangePasswordInput
+	deleted   authuc.DeleteAccountInput
+	revoked   string
+	others    bool
+}
+
+func (f *fakeAccount) ChangePassword(_ context.Context, p auth.Principal, in authuc.ChangePasswordInput, _ authuc.Client) error {
+	f.principal, f.change = p, in
+	return f.err
+}
+
+func (f *fakeAccount) ListSessions(_ context.Context, p auth.Principal) ([]authuc.SessionInfo, error) {
+	f.principal = p
+	return f.sessions, f.err
+}
+
+func (f *fakeAccount) RevokeSession(_ context.Context, p auth.Principal, id string, _ authuc.Client) (bool, error) {
+	f.principal, f.revoked = p, id
+	return f.current, f.err
+}
+
+func (f *fakeAccount) RevokeOtherSessions(_ context.Context, p auth.Principal, _ authuc.Client) error {
+	f.principal, f.others = p, true
+	return f.err
+}
+
+func (f *fakeAccount) DeleteAccount(_ context.Context, p auth.Principal, in authuc.DeleteAccountInput, _ authuc.Client) error {
+	f.principal, f.deleted = p, in
+	return f.err
+}
+
+func newAccountHandler(a *fakeAccount) *Me {
+	h := newMeHandler(&fakeProfile{user: sampleUser()})
+	h.Account = a
+	return h
+}
+
+// withRouteID sets the {id} URL parameter as chi does.
+func withRouteID(id string) func(*http.Request) {
+	return func(r *http.Request) {
+		rc := chi.NewRouteContext()
+		rc.URLParams.Add("id", id)
+		*r = *r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rc))
+	}
+}
+
+func TestChangePasswordRoute(t *testing.T) {
+	a := &fakeAccount{}
+	h := newAccountHandler(a)
+	w := serve(h.ChangePassword, request(http.MethodPost, "/api/v1/me/password", `{"currentPassword":"old one","newPassword":"new one"}`, asUser))
+	require.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, authuc.ChangePasswordInput{CurrentPassword: "old one", NewPassword: "new one"}, a.change)
+	assert.Equal(t, "s1", a.principal.SessionID)
+
+	w = serve(h.ChangePassword, request(http.MethodPost, "/api/v1/me/password", `{"newPassword":"new one"}`, asUser))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "the current password is required")
+
+	a.err = authuc.ErrPasswordIncorrect
+	w = serve(h.ChangePassword, request(http.MethodPost, "/api/v1/me/password", `{"currentPassword":"x","newPassword":"y"}`, asUser))
+	assert.Equal(t, http.StatusForbidden, w.Code, "403, not 401: the session is fine")
+	assert.Equal(t, "password_incorrect", problemOf(t, w).Code)
+}
+
+func TestSessionRoutes(t *testing.T) {
+	a := &fakeAccount{sessions: []authuc.SessionInfo{
+		{Session: domain.Session{ID: "s1", UserAgent: "ua", IP: "198.51.100.7", CreatedAt: t0, LastUsedAt: t0, ExpiresAt: t0.Add(time.Hour)}, Current: true},
+		{Session: domain.Session{ID: "s2", UserID: "u1", CreatedAt: t0, LastUsedAt: t0, ExpiresAt: t0.Add(time.Hour)}},
+	}}
+	h := newAccountHandler(a)
+
+	w := serve(h.ListSessions, request(http.MethodGet, "/api/v1/me/sessions", "", asUser))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.Len(t, body.Sessions, 2)
+	assert.Equal(t, map[string]any{
+		"id": "s1", "createdAt": "2026-11-08T12:00:00Z", "lastUsedAt": "2026-11-08T12:00:00Z", "expiresAt": "2026-11-08T13:00:00Z",
+		"userAgent": "ua", "ip": "198.51.100.7", "current": true,
+	}, body.Sessions[0])
+	assert.NotContains(t, body.Sessions[1], "userId", "no internal fields")
+
+	a.sessions = nil
+	w = serve(h.ListSessions, request(http.MethodGet, "/api/v1/me/sessions", "", asUser))
+	assert.JSONEq(t, `{"sessions":[]}`, w.Body.String(), "an empty list, never null")
+
+	w = serve(h.RevokeSession, request(http.MethodDelete, "/api/v1/me/sessions/s2", "", asUser, withRouteID("s2")))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, "s2", a.revoked)
+	assert.Empty(t, w.Result().Cookies())
+
+	a.current = true
+	w = serve(h.RevokeSession, request(http.MethodDelete, "/api/v1/me/sessions/s1", "", asUser, withRouteID("s1"), fromBrowser))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Negative(t, cookiesOf(w)["__Host-monthra_at"].MaxAge, "signing out the current browser session clears its cookies")
+
+	a.err = authuc.ErrSessionNotFound
+	w = serve(h.RevokeSession, request(http.MethodDelete, "/api/v1/me/sessions/x", "", asUser, withRouteID("x")))
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, "not_found", problemOf(t, w).Code)
+
+	a.err = nil
+	w = serve(h.RevokeOtherSessions, request(http.MethodDelete, "/api/v1/me/sessions", "", asUser))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.True(t, a.others)
+
+	a.err = authuc.ErrUnavailable
+	for _, hf := range []http.HandlerFunc{h.ListSessions, h.RevokeOtherSessions} {
+		w := serve(hf, request(http.MethodGet, "/api/v1/me/sessions", "", asUser))
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	}
+}
+
+func TestDeleteMeRoute(t *testing.T) {
+	a := &fakeAccount{}
+	h := newAccountHandler(a)
+
+	w := serve(h.Delete, request(http.MethodDelete, "/api/v1/me", `{"password":"secret","code":"123456"}`, asUser, fromBrowser))
+	require.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, authuc.DeleteAccountInput{Password: "secret", Code: "123456"}, a.deleted)
+	assert.Negative(t, cookiesOf(w)["__Host-monthra_at"].MaxAge, "cookies are cleared")
+	assert.Negative(t, cookiesOf(w)["__Secure-monthra_rt"].MaxAge)
+
+	a.deleted = authuc.DeleteAccountInput{}
+	w = serve(h.Delete, request(http.MethodDelete, "/api/v1/me", ``, asUser))
+	assert.Equal(t, http.StatusBadRequest, w.Code, "the password is asked in the body")
+	assert.Empty(t, a.deleted.Password)
+
+	a.err = authuc.ErrMFACodeInvalid
+	w = serve(h.Delete, request(http.MethodDelete, "/api/v1/me", `{"password":"secret"}`, asUser))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Equal(t, "mfa_code_invalid", problemOf(t, w).Code)
+	assert.Empty(t, w.Result().Cookies(), "a refused deletion keeps the session")
+
+	for _, hf := range []http.HandlerFunc{h.ChangePassword, h.ListSessions, h.RevokeSession, h.RevokeOtherSessions, h.Delete} {
+		w := serve(hf, request(http.MethodPost, "/api/v1/me", `{}`))
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 	}
 }

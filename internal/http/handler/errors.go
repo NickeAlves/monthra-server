@@ -57,6 +57,9 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 		problem.Write(w, r, http.StatusConflict, i18n.ErrMFANotEnabled)
 	case errors.Is(err, authuc.ErrMFASetupRequired):
 		problem.Write(w, r, http.StatusConflict, i18n.ErrMFASetupRequired)
+	// Another user's session looks exactly like one that does not exist.
+	case errors.Is(err, authuc.ErrSessionNotFound):
+		problem.Write(w, r, http.StatusNotFound, i18n.ErrNotFound)
 	case errors.Is(err, authuc.ErrUnavailable):
 		logger.ErrorContext(r.Context(), "auth dependency unavailable", slog.String("error", err.Error()))
 		problem.Write(w, r, http.StatusServiceUnavailable, i18n.ErrServiceUnavailable)

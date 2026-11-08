@@ -120,6 +120,14 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Mailer:  d.mailer,
 		Auditor: audit.NewRecorder(repomongo.NewAuditLogs(d.db), logger),
 		Metrics: metrics,
+		// Feature data first (step 3 domains and Open Finance register theirs
+		// above these), then the auth stores; the account itself goes last.
+		Erasers: []authuc.UserDataEraser{
+			repomongo.NewUserEraser(d.db, repomongo.CollAuthTokens),
+			repomongo.NewUserEraser(d.db, repomongo.CollRefreshTokens),
+			repomongo.NewUserEraser(d.db, repomongo.CollSessions),
+			locales,
+		},
 	}, authuc.Options{
 		RefreshTTL:    cfg.Auth.RefreshTokenTTL,
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,
@@ -135,7 +143,7 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 
 	return authComponents{
 		handler:       &handler.Auth{Service: service, Cookies: d.cookies, Logger: logger},
-		me:            &handler.Me{Profile: profiles, Cookies: d.cookies, Logger: logger},
+		me:            &handler.Me{Profile: profiles, Account: service, Cookies: d.cookies, Logger: logger},
 		locales:       profiles,
 		authenticator: middleware.AuthOptions{Tokens: tokens, Revocations: revocations, Cookies: d.cookies, Logger: logger},
 	}, nil

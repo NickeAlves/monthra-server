@@ -65,3 +65,32 @@ type UpdatePreferencesRequest struct {
 func (r UpdatePreferencesRequest) Patch() domain.PreferencesPatch {
 	return domain.PreferencesPatch{Locale: r.Locale, Theme: r.Theme, Currency: r.Currency}
 }
+
+// ChangePasswordRequest is the body of POST /me/password.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword" validate:"required,max=4096"`
+	NewPassword     string `json:"newPassword" validate:"required,max=4096"`
+}
+
+// DeleteAccountRequest is the body of DELETE /me. Code is required when MFA is on.
+type DeleteAccountRequest struct {
+	Password string `json:"password" validate:"required,max=4096"`
+	Code     string `json:"code" validate:"max=64"`
+}
+
+// SessionView is one signed-in device. LastUsedAt moves on each refresh, so
+// it is accurate to the access token lifetime.
+type SessionView struct {
+	ID         string    `json:"id"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastUsedAt time.Time `json:"lastUsedAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	UserAgent  string    `json:"userAgent"`
+	IP         string    `json:"ip"`
+	Current    bool      `json:"current"`
+}
+
+// SessionsResponse answers GET /me/sessions.
+type SessionsResponse struct {
+	Sessions []SessionView `json:"sessions"`
+}

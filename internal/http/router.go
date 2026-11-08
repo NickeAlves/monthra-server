@@ -192,8 +192,13 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 func mountMe(r chi.Router, me *handler.Me) {
 	r.Get("/me", me.Get)
 	r.Patch("/me", me.Update)
+	r.Delete("/me", me.Delete)
 	r.Get("/me/preferences", me.GetPreferences)
 	r.Patch("/me/preferences", me.UpdatePreferences)
+	r.Post("/me/password", me.ChangePassword)
+	r.Get("/me/sessions", me.ListSessions)
+	r.Delete("/me/sessions", me.RevokeOtherSessions)
+	r.Delete("/me/sessions/{id}", me.RevokeSession)
 }
 
 func serveOpenAPI(w http.ResponseWriter, _ *http.Request) {
