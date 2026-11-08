@@ -67,6 +67,8 @@ func TestRunServesAndShutsDown(t *testing.T) {
 	t.Setenv("CSRF_SECRET", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)))
 	t.Setenv("JWT_SIGNING_KEYS", "k1:"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x24}, 32)))
 	t.Setenv("JWT_ACTIVE_KID", "k1")
+	t.Setenv("ENCRYPTION_KEYS", "e1:"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x25}, 32)))
+	t.Setenv("ENCRYPTION_ACTIVE_KID", "e1")
 	t.Setenv("SMTP_HOST", "127.0.0.1")
 	t.Setenv("SMTP_FROM", "no-reply@monthra.example")
 	t.Setenv("HTTP_ADDR", freeAddr(t))

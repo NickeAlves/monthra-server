@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,6 +51,7 @@ type Config struct {
 	Security   Security
 	RateLimits RateLimits
 	Auth       Auth
+	Encryption Encryption
 	SMTP       SMTP
 	Captcha    Captcha
 	Mongo      Mongo
@@ -102,6 +104,10 @@ type RateLimits struct {
 	AuthPerEmail Rate `env:"RATE_LIMIT_AUTH_EMAIL" envDefault:"5/m"`
 	// RefreshPerIP is the budget of token refreshes, by client IP.
 	RefreshPerIP Rate `env:"RATE_LIMIT_REFRESH_IP" envDefault:"30/m"`
+	// AuthMailPerEmail is how many account emails (verification, sign-up
+	// attempt, password reset) one address can be sent, so nobody can flood
+	// someone else's inbox through the sign-up or recovery forms.
+	AuthMailPerEmail Rate `env:"RATE_LIMIT_AUTH_MAIL" envDefault:"5/h"`
 }
 
 // Auth holds the token, password and verification settings (§6.1, §6.2).
@@ -117,12 +123,23 @@ type Auth struct {
 	RefreshReuseGrace time.Duration `env:"REFRESH_REUSE_GRACE" envDefault:"10s"`
 	// EmailTokenTTL is the lifetime of email verification links.
 	EmailTokenTTL time.Duration `env:"EMAIL_TOKEN_TTL" envDefault:"30m"`
+	// ResetTokenTTL is the lifetime of password reset links.
+	ResetTokenTTL time.Duration `env:"RESET_TOKEN_TTL" envDefault:"15m"`
 	// PasswordHashConcurrency bounds parallel Argon2id runs (64 MiB each).
 	PasswordHashConcurrency int `env:"PASSWORD_HASH_CONCURRENCY" envDefault:"4"`
 	// HIBPEnabled checks new passwords against Have I Been Pwned (k-anonymity).
 	HIBPEnabled bool `env:"HIBP_ENABLED" envDefault:"true"`
 	// AppPublicURL is the web app base URL used in email links.
 	AppPublicURL PublicURL `env:"APP_PUBLIC_URL" envDefault:"http://localhost:3000"`
+}
+
+// Encryption holds the AES-256 keys that encrypt sensitive fields at rest
+// (§6.6), such as TOTP secrets.
+type Encryption struct {
+	// Keys are 32-byte AES-256 keys by id. Old ids keep decrypting after a rotation.
+	Keys KeyRing `env:"ENCRYPTION_KEYS,notEmpty"`
+	// ActiveKID picks the key that encrypts new values.
+	ActiveKID string `env:"ENCRYPTION_ACTIVE_KID,notEmpty"`
 }
 
 // SMTP holds the transactional email relay settings.
@@ -212,6 +229,7 @@ func (c Config) Validate() error {
 	}
 	errs = append(errs, c.Security.validate(c.AppEnv)...)
 	errs = append(errs, c.Auth.validate(c.AppEnv)...)
+	errs = append(errs, c.Encryption.validate(c.Security, c.Auth)...)
 	errs = append(errs, c.SMTP.validate(c.AppEnv)...)
 	return errors.Join(errs...)
 }
@@ -225,6 +243,9 @@ const (
 	maxRefreshTokenTTL = 90 * 24 * time.Hour
 	minEmailTokenTTL   = 5 * time.Minute
 	maxEmailTokenTTL   = time.Hour
+	minResetTokenTTL   = 5 * time.Minute
+	maxResetTokenTTL   = 30 * time.Minute // §6.1: 15 to 30 minutes
+	aes256KeyBytes     = 32
 	maxHashConcurrency = 64
 	maxRefreshGrace    = time.Minute
 )
@@ -251,11 +272,41 @@ func (a Auth) validate(appEnv Env) []error {
 	if a.EmailTokenTTL < minEmailTokenTTL || a.EmailTokenTTL > maxEmailTokenTTL {
 		errs = append(errs, fmt.Errorf("EMAIL_TOKEN_TTL must be between %s and %s", minEmailTokenTTL, maxEmailTokenTTL))
 	}
+	if a.ResetTokenTTL < minResetTokenTTL || a.ResetTokenTTL > maxResetTokenTTL {
+		errs = append(errs, fmt.Errorf("RESET_TOKEN_TTL must be between %s and %s", minResetTokenTTL, maxResetTokenTTL))
+	}
 	if a.PasswordHashConcurrency < 1 || a.PasswordHashConcurrency > maxHashConcurrency {
 		errs = append(errs, fmt.Errorf("PASSWORD_HASH_CONCURRENCY must be between 1 and %d", maxHashConcurrency))
 	}
 	if !appEnv.IsLocal() && !strings.HasPrefix(string(a.AppPublicURL), "https://") {
 		errs = append(errs, fmt.Errorf("APP_PUBLIC_URL must use https in %s", appEnv))
+	}
+	return errs
+}
+
+// validate checks the key sizes and that no key is shared with the CSRF or
+// JWT secrets: one leaked secret must not open the others.
+func (e Encryption) validate(sec Security, a Auth) []error {
+	var errs []error
+	if _, ok := e.Keys.Key(e.ActiveKID); !ok {
+		errs = append(errs, fmt.Errorf("ENCRYPTION_ACTIVE_KID %q is not in ENCRYPTION_KEYS", e.ActiveKID))
+	}
+	others := [][]byte{sec.CSRFSecret}
+	for _, kid := range a.SigningKeys.KIDs() {
+		seed, _ := a.SigningKeys.Key(kid)
+		others = append(others, seed)
+	}
+	for _, kid := range e.Keys.KIDs() {
+		key, _ := e.Keys.Key(kid)
+		if len(key) != aes256KeyBytes {
+			errs = append(errs, fmt.Errorf("ENCRYPTION_KEYS key %q must decode to %d bytes (an AES-256 key)", kid, aes256KeyBytes))
+		}
+		for _, other := range others {
+			if bytes.Equal(key, other) {
+				errs = append(errs, fmt.Errorf("ENCRYPTION_KEYS key %q reuses CSRF_SECRET or a JWT signing key: generate a separate one with make secrets", kid))
+				break
+			}
+		}
 	}
 	return errs
 }

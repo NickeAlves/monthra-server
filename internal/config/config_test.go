@@ -20,12 +20,17 @@ func setRequired(t *testing.T) {
 	t.Setenv("CSRF_SECRET", testSecret)
 	t.Setenv("JWT_SIGNING_KEYS", "k1:"+testSecret)
 	t.Setenv("JWT_ACTIVE_KID", "k1")
+	t.Setenv("ENCRYPTION_KEYS", "e1:"+testEncryptionKey)
+	t.Setenv("ENCRYPTION_ACTIVE_KID", "e1")
 	t.Setenv("SMTP_HOST", "mailpit")
 	t.Setenv("SMTP_FROM", "Monthra <no-reply@monthra.example>")
 }
 
 // testSecret is built at run time so no key-looking literal enters git.
-var testSecret = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+var (
+	testSecret        = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	testEncryptionKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x43}, 32))
+)
 
 func TestLoadDefaults(t *testing.T) {
 	setRequired(t)
@@ -49,12 +54,16 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, Rate{Limit: 5, Period: time.Minute}, cfg.RateLimits.AuthPerIP)
 	assert.Equal(t, Rate{Limit: 5, Period: time.Minute}, cfg.RateLimits.AuthPerEmail)
 	assert.Equal(t, Rate{Limit: 30, Period: time.Minute}, cfg.RateLimits.RefreshPerIP)
+	assert.Equal(t, Rate{Limit: 5, Period: time.Hour}, cfg.RateLimits.AuthMailPerEmail)
 
 	assert.Equal(t, []string{"k1"}, cfg.Auth.SigningKeys.KIDs())
 	assert.Equal(t, "k1", cfg.Auth.ActiveKID)
 	assert.Equal(t, 15*time.Minute, cfg.Auth.AccessTokenTTL)
 	assert.Equal(t, 30*24*time.Hour, cfg.Auth.RefreshTokenTTL)
 	assert.Equal(t, 30*time.Minute, cfg.Auth.EmailTokenTTL)
+	assert.Equal(t, 15*time.Minute, cfg.Auth.ResetTokenTTL)
+	assert.Equal(t, []string{"e1"}, cfg.Encryption.Keys.KIDs())
+	assert.Equal(t, "e1", cfg.Encryption.ActiveKID)
 	assert.Equal(t, 10*time.Second, cfg.Auth.RefreshReuseGrace)
 	assert.Equal(t, 4, cfg.Auth.PasswordHashConcurrency)
 	assert.True(t, cfg.Auth.HIBPEnabled)
@@ -102,6 +111,13 @@ func TestLoadRejectsBadAuthSettings(t *testing.T) {
 		"access ttl too long":    {"ACCESS_TOKEN_TTL", "1h", "ACCESS_TOKEN_TTL must be between"},
 		"refresh ttl too short":  {"REFRESH_TOKEN_TTL", "10m", "REFRESH_TOKEN_TTL must be between"},
 		"email ttl too long":     {"EMAIL_TOKEN_TTL", "48h", "EMAIL_TOKEN_TTL must be between"},
+		"reset ttl too long":     {"RESET_TOKEN_TTL", "1h", "RESET_TOKEN_TTL must be between"},
+		"reset ttl too short":    {"RESET_TOKEN_TTL", "1m", "RESET_TOKEN_TTL must be between"},
+		"encryption keys absent": {"ENCRYPTION_KEYS", "", "ENCRYPTION_KEYS"},
+		"short aes key":          {"ENCRYPTION_KEYS", "e1:c2hvcnQ=", "must decode to 32 bytes (an AES-256 key)"},
+		"unknown encryption kid": {"ENCRYPTION_ACTIVE_KID", "e9", `ENCRYPTION_ACTIVE_KID "e9" is not in ENCRYPTION_KEYS`},
+		"encryption reuses csrf": {"ENCRYPTION_KEYS", "e1:" + testSecret, "reuses CSRF_SECRET or a JWT signing key"},
+		"bad mail quota":         {"RATE_LIMIT_AUTH_MAIL", "5/d", "invalid rate"},
 		"refresh grace too long": {"REFRESH_REUSE_GRACE", "5m", "REFRESH_REUSE_GRACE must be between"},
 		"no hash concurrency":    {"PASSWORD_HASH_CONCURRENCY", "0", "PASSWORD_HASH_CONCURRENCY"},
 		"relative public url":    {"APP_PUBLIC_URL", "/app", "invalid APP_PUBLIC_URL"},
