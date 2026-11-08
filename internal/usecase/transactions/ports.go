@@ -33,6 +33,30 @@ type Store interface {
 	// DeleteInstallments removes the installments of group groupID of
 	// userID numbered from on (1 for all of them).
 	DeleteInstallments(ctx context.Context, userID, groupID string, from int) error
+
+	// Occurrences returns the occurrences of recurrence recurrenceID of
+	// userID whose rule day is from or later (zero for all of them), in the
+	// order of those days.
+	Occurrences(ctx context.Context, userID, recurrenceID string, from domain.Date) ([]domain.Transaction, error)
+	// DeleteOccurrences removes the occurrences of recurrence recurrenceID
+	// of userID whose rule day is from or later (zero for all of them).
+	DeleteOccurrences(ctx context.Context, userID, recurrenceID string, from domain.Date) error
+}
+
+// Series is what the transactions need from the recurrences: creating the
+// occurrences due before each read, and keeping a recurrence in step with
+// the scoped edits and deletions of its occurrences.
+type Series interface {
+	// Materialize creates the occurrences of userID's recurrences due up to
+	// asOf (the reader's today; zero is today in UTC). It never fails.
+	Materialize(ctx context.Context, userID string, asOf domain.Date)
+	// Follow applies to the recurrence of an occurrence the changes a
+	// scoped edit made to it, from before to after.
+	Follow(ctx context.Context, before, after domain.Transaction) error
+	// EndBefore ends the recurrence of an occurrence before its rule day.
+	EndBefore(ctx context.Context, occurrence domain.Transaction) error
+	// Remove deletes the recurrence of an occurrence.
+	Remove(ctx context.Context, occurrence domain.Transaction) error
 }
 
 // Accounts finds the caller's accounts a transaction names.

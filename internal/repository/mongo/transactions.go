@@ -31,7 +31,8 @@ func NewTransactions(db *mongo.Database) *Transactions {
 // so the partial invoice indexes hold exactly the card legs.
 // description_search is the folded description that text search matches;
 // it never leaves the store. installment is present on the installments of
-// a purchase only, and never changes.
+// a purchase only, recurrence_id and occurrence_date (the day the rule gave)
+// on the occurrences of a recurrence only; neither ever changes.
 type transactionDoc struct {
 	ID                bson.ObjectID   `bson:"_id"`
 	UserID            bson.ObjectID   `bson:"user_id"`
@@ -50,6 +51,8 @@ type transactionDoc struct {
 	DescriptionSearch string          `bson:"description_search"`
 	Tags              []string        `bson:"tags"`
 	Installment       *installmentDoc `bson:"installment,omitempty"`
+	RecurrenceID      *bson.ObjectID  `bson:"recurrence_id,omitempty"`
+	OccurrenceDate    *time.Time      `bson:"occurrence_date,omitempty"`
 	Source            string          `bson:"source"`
 	CreatedAt         time.Time       `bson:"created_at"`
 	UpdatedAt         time.Time       `bson:"updated_at"`
@@ -92,6 +95,13 @@ func newTransactionDoc(t domain.Transaction) (transactionDoc, error) {
 			return transactionDoc{}, err
 		}
 		doc.Installment = &installmentDoc{GroupID: group, Number: t.Installment.Number, Count: t.Installment.Count}
+	}
+	if t.Recurrence != nil {
+		rec, err := objectID(t.Recurrence.ID)
+		if err != nil {
+			return transactionDoc{}, err
+		}
+		doc.RecurrenceID, doc.OccurrenceDate = &rec, optionalDay(t.Recurrence.Date)
 	}
 	return doc, nil
 }
@@ -141,6 +151,9 @@ func (d transactionDoc) toDomain() domain.Transaction {
 	}
 	if d.Installment != nil {
 		t.Installment = &domain.Installment{GroupID: d.Installment.GroupID.Hex(), Number: d.Installment.Number, Count: d.Installment.Count}
+	}
+	if d.RecurrenceID != nil {
+		t.Recurrence = &domain.RecurrenceLink{ID: d.RecurrenceID.Hex(), Date: storedDay(d.OccurrenceDate)}
 	}
 	return t
 }
@@ -258,6 +271,100 @@ func (r *Transactions) DeleteInstallments(ctx context.Context, userID, groupID s
 	}
 	if _, err := r.coll.DeleteMany(ctx, filter); err != nil {
 		return fmt.Errorf("delete installments: %w", err)
+	}
+	return nil
+}
+
+// InsertOccurrences stores the occurrences ts of recurrences and returns
+// how many were new. An occurrence already stored (a concurrent reader
+// created it first, or a pass interrupted before its recurrence advanced)
+// is refused by the unique index on (recurrence_id, occurrence_date) and
+// skipped; any other failure is returned.
+func (r *Transactions) InsertOccurrences(ctx context.Context, ts []domain.Transaction) (int, error) {
+	if len(ts) == 0 {
+		return 0, nil
+	}
+	docs := make([]any, len(ts))
+	for i, t := range ts {
+		if t.Recurrence == nil {
+			return 0, errors.New("insert occurrences: not an occurrence")
+		}
+		doc, err := newTransactionDoc(t)
+		if err != nil {
+			return 0, err
+		}
+		docs[i] = doc
+	}
+	_, err := r.coll.InsertMany(ctx, docs, options.InsertMany().SetOrdered(false))
+	if err == nil {
+		return len(docs), nil
+	}
+	var bulk mongo.BulkWriteException
+	if !errors.As(err, &bulk) || bulk.WriteConcernError != nil {
+		return 0, fmt.Errorf("insert occurrences: %w", err)
+	}
+	for _, we := range bulk.WriteErrors {
+		if we.Code != duplicateKey {
+			return 0, fmt.Errorf("insert occurrences: %w", err)
+		}
+	}
+	return len(docs) - len(bulk.WriteErrors), nil
+}
+
+// duplicateKey is the server's error code for a unique index violation.
+const duplicateKey = 11000
+
+// inRecurrence matches the occurrences of recurrence rec of uid whose rule
+// day is from or later (all of them when from is zero).
+func inRecurrence(userID, recurrenceID string, from domain.Date) (bson.D, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := objectID(recurrenceID)
+	if err != nil {
+		return nil, err
+	}
+	f := bson.D{{Key: "recurrence_id", Value: rec}, {Key: "user_id", Value: uid}}
+	if !from.IsZero() {
+		f = append(f, bson.E{Key: "occurrence_date", Value: bson.D{{Key: "$gte", Value: from.Time()}}})
+	}
+	return f, nil
+}
+
+// Occurrences returns the occurrences of recurrence recurrenceID of userID
+// whose rule day is from or later (all of them when from is zero), in the
+// order of those days.
+func (r *Transactions) Occurrences(ctx context.Context, userID, recurrenceID string, from domain.Date) ([]domain.Transaction, error) {
+	filter, err := inRecurrence(userID, recurrenceID, from)
+	if err != nil {
+		return []domain.Transaction{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	cur, err := r.coll.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "occurrence_date", Value: 1}}))
+	if err != nil {
+		return nil, fmt.Errorf("find occurrences: %w", err)
+	}
+	var docs []transactionDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode occurrences: %w", err)
+	}
+	out := make([]domain.Transaction, len(docs))
+	for i, d := range docs {
+		out[i] = d.toDomain()
+	}
+	return out, nil
+}
+
+// DeleteOccurrences removes the occurrences of recurrence recurrenceID of
+// userID whose rule day is from or later (all of them when from is zero);
+// deleting them again is a no-op.
+func (r *Transactions) DeleteOccurrences(ctx context.Context, userID, recurrenceID string, from domain.Date) error {
+	filter, err := inRecurrence(userID, recurrenceID, from)
+	if err != nil {
+		return nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	if _, err := r.coll.DeleteMany(ctx, filter); err != nil {
+		return fmt.Errorf("delete occurrences: %w", err)
 	}
 	return nil
 }
@@ -448,6 +555,13 @@ func listFilter(userID string, f domain.TransactionFilter, after *domain.Transac
 			return nil, err
 		}
 		rest = append(rest, bson.E{Key: "installment.group_id", Value: group})
+	}
+	if f.RecurrenceID != "" {
+		rec, err := objectID(f.RecurrenceID)
+		if err != nil {
+			return nil, err
+		}
+		rest = append(rest, bson.E{Key: "recurrence_id", Value: rec})
 	}
 	if f.Search != "" {
 		// A literal match: the reader's text never acts as a pattern.

@@ -22,6 +22,9 @@ type Query struct {
 	After  *domain.TransactionCursor
 	// Limit is between 1 and MaxPageSize; 0 means DefaultPageSize.
 	Limit int
+	// AsOf is the reader's today, up to which the occurrences of the
+	// recurrences are created first; zero is today in UTC.
+	AsOf domain.Date
 }
 
 // Page is a page of transactions and where the next one starts, or nil on
@@ -37,6 +40,7 @@ type Service struct {
 	accounts   Accounts
 	categories Categories
 	metrics    Metrics
+	series     Series
 	now        func() time.Time
 }
 
@@ -46,11 +50,20 @@ type Options struct {
 	Now func() time.Time
 	// Metrics defaults to counting nothing.
 	Metrics Metrics
+	// Series defaults to no recurrences.
+	Series Series
 }
 
 type noMetrics struct{}
 
 func (noMetrics) TransactionCreated(string) {}
+
+type noSeries struct{}
+
+func (noSeries) Materialize(context.Context, string, domain.Date)                     {}
+func (noSeries) Follow(context.Context, domain.Transaction, domain.Transaction) error { return nil }
+func (noSeries) EndBefore(context.Context, domain.Transaction) error                  { return nil }
+func (noSeries) Remove(context.Context, domain.Transaction) error                     { return nil }
 
 // NewService returns the service.
 func NewService(store Store, accounts Accounts, categories Categories, o Options) *Service {
@@ -60,15 +73,19 @@ func NewService(store Store, accounts Accounts, categories Categories, o Options
 	if o.Metrics == nil {
 		o.Metrics = noMetrics{}
 	}
-	return &Service{store: store, accounts: accounts, categories: categories, metrics: o.Metrics, now: o.Now}
+	if o.Series == nil {
+		o.Series = noSeries{}
+	}
+	return &Service{store: store, accounts: accounts, categories: categories, metrics: o.Metrics, series: o.Series, now: o.Now}
 }
 
 // clock is the current time at the precision MongoDB keeps (milliseconds),
 // so what a write returns equals what later reads return.
 func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Millisecond) }
 
-// List returns one page of the caller's transactions, newest first; a page
-// size out of bounds is a *domain.ValidationError.
+// List returns one page of the caller's transactions, newest first, after
+// creating the occurrences of the caller's recurrences due up to q.AsOf; a
+// page size out of bounds is a *domain.ValidationError.
 func (s *Service) List(ctx context.Context, userID string, q Query) (Page, error) {
 	limit := q.Limit
 	switch {
@@ -77,6 +94,7 @@ func (s *Service) List(ctx context.Context, userID string, q Query) (Page, error
 	case limit < 0 || limit > MaxPageSize:
 		return Page{}, &domain.ValidationError{Fields: []domain.FieldError{{Field: "limit", Code: domain.CodeOutOfRange}}}
 	}
+	s.series.Materialize(ctx, userID, q.AsOf)
 	// One more than the page tells whether another page follows.
 	items, err := s.store.List(ctx, userID, q.Filter, q.After, limit+1)
 	if err != nil {
@@ -141,8 +159,10 @@ func (s *Service) Get(ctx context.Context, userID, id string) (domain.Transactio
 
 // Update applies a patch to one of the caller's transactions and returns
 // it. On an installment, scope reaches the next installments of its
-// purchase (ScopeFuture) or all of them (ScopeAll), which take the changes
-// the patch made to this one (domain.TransactionPatch.ApplyInScope). Only
+// purchase (ScopeFuture) or all of them (ScopeAll); on an occurrence, the
+// next occurrences of its recurrence or all of them, and the recurrence
+// itself, so the occurrences still to come take the changes too. They take
+// the changes the patch made to this one (domain.TransactionPatch.ApplyInScope). Only
 // the records the patch moves it to are looked up, and the card a leg stays
 // on when the patch moves its day or names its invoice (for the card's
 // settings); a patch that changes nothing writes nothing.
@@ -177,25 +197,29 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 			return domain.Transaction{}, err
 		}
 	}
-	var others []domain.Transaction
-	if from, ok := reach(current, scope); ok {
-		if others, err = s.store.Installments(ctx, userID, current.Installment.GroupID, from); err != nil {
-			return domain.Transaction{}, fmt.Errorf("find installments: %w", err)
-		}
+	others, err := s.inScope(ctx, current, scope)
+	if err != nil {
+		return domain.Transaction{}, err
 	}
 	edit, err := p.ApplyInScope(current, scope, others, refs, s.clock())
 	if err != nil {
 		return domain.Transaction{}, err
 	}
-	// The others first and this one last: until this one is stored, sending
-	// the same patch again finds the same changes on it and completes them.
+	// The others first, then the recurrence, and this one last: until this
+	// one is stored, sending the same patch again finds the same changes on
+	// it and completes them.
 	if len(edit.Others) > 0 {
 		if err := s.store.UpdateMany(ctx, edit.Others); err != nil {
-			return domain.Transaction{}, fmt.Errorf("update installments: %w", err)
+			return domain.Transaction{}, fmt.Errorf("update series: %w", err)
 		}
 	}
 	if !edit.Changed {
 		return current, nil
+	}
+	if current.Recurrence != nil && scope != domain.ScopeThis {
+		if err := s.series.Follow(ctx, current, edit.Next); err != nil {
+			return domain.Transaction{}, fmt.Errorf("follow the recurrence: %w", err)
+		}
 	}
 	if err := s.store.Update(ctx, edit.Next); err != nil {
 		return domain.Transaction{}, fmt.Errorf("update transaction: %w", err)
@@ -205,17 +229,40 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 
 // Delete removes one of the caller's transactions or, on an installment,
 // the next installments of its purchase too (ScopeFuture) or all of them
-// (ScopeAll); the others keep their numbers. It answers domain.ErrNotFound
-// for a transaction the caller does not hold.
+// (ScopeAll); the others keep their numbers. On an occurrence, ScopeFuture
+// ends its recurrence before it and removes it and the next occurrences;
+// ScopeAll removes the recurrence and every occurrence. The recurrence goes
+// first, so no read creates occurrences again meanwhile. It answers
+// domain.ErrNotFound for a transaction the caller does not hold.
 func (s *Service) Delete(ctx context.Context, userID, id string, scope domain.EditScope) error {
 	if scope != domain.ScopeThis {
 		current, err := s.Get(ctx, userID, id)
 		if err != nil {
 			return err
 		}
-		if from, ok := reach(current, scope); ok {
+		switch {
+		case current.Installment != nil:
+			from := 1
+			if scope == domain.ScopeFuture {
+				from = current.Installment.Number
+			}
 			if err := s.store.DeleteInstallments(ctx, userID, current.Installment.GroupID, from); err != nil {
 				return fmt.Errorf("delete installments: %w", err)
+			}
+			return nil
+		case current.Recurrence != nil:
+			var from domain.Date
+			if scope == domain.ScopeFuture {
+				from = current.Recurrence.Date
+				err = s.series.EndBefore(ctx, current)
+			} else {
+				err = s.series.Remove(ctx, current)
+			}
+			if err != nil {
+				return fmt.Errorf("end the recurrence: %w", err)
+			}
+			if err := s.store.DeleteOccurrences(ctx, userID, current.Recurrence.ID, from); err != nil {
+				return fmt.Errorf("delete occurrences: %w", err)
 			}
 			return nil
 		}
@@ -226,18 +273,37 @@ func (s *Service) Delete(ctx context.Context, userID, id string, scope domain.Ed
 	return nil
 }
 
-// reach returns the first installment number scope reaches from t, and
-// false when it reaches t alone (ScopeThis, or t outside a purchase).
-func reach(t domain.Transaction, scope domain.EditScope) (int, bool) {
+// inScope returns the other transactions of t's series that scope reaches:
+// the installments of its purchase numbered from t's (ScopeFuture) or all
+// of them (ScopeAll), or the occurrences of its recurrence from t's rule
+// day or all of them; none for ScopeThis or outside a series.
+func (s *Service) inScope(ctx context.Context, t domain.Transaction, scope domain.EditScope) ([]domain.Transaction, error) {
+	if scope == domain.ScopeThis {
+		return nil, nil
+	}
 	switch {
-	case t.Installment == nil:
-		return 0, false
-	case scope == domain.ScopeFuture:
-		return t.Installment.Number, true
-	case scope == domain.ScopeAll:
-		return 1, true
+	case t.Installment != nil:
+		from := 1
+		if scope == domain.ScopeFuture {
+			from = t.Installment.Number
+		}
+		list, err := s.store.Installments(ctx, t.UserID, t.Installment.GroupID, from)
+		if err != nil {
+			return nil, fmt.Errorf("find installments: %w", err)
+		}
+		return list, nil
+	case t.Recurrence != nil:
+		var from domain.Date
+		if scope == domain.ScopeFuture {
+			from = t.Recurrence.Date
+		}
+		list, err := s.store.Occurrences(ctx, t.UserID, t.Recurrence.ID, from)
+		if err != nil {
+			return nil, fmt.Errorf("find occurrences: %w", err)
+		}
+		return list, nil
 	default:
-		return 0, false
+		return nil, nil
 	}
 }
 

@@ -452,7 +452,7 @@ func TestDeleteCategoryFailures(t *testing.T) {
 
 	svc, store, usage, a, b = setup()
 	usage.onMove = func() { usage.moveErr = errors.New("mongo down") }
-	assert.ErrorContains(t, svc.Delete(ctx, "u1", a.ID, b.ID), "move late transactions: mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", a.ID, b.ID), "move late records: move transactions: mongo down")
 	assert.NotContains(t, store.categories, a.ID, "already deleted: only a write racing the deletion is left behind")
 
 	svc, store, _, a, b = setup()
@@ -464,4 +464,33 @@ func TestNewServiceDefaults(t *testing.T) {
 	svc := NewService(newMemStore(), newMemMarker(), newMemUsage(), Options{})
 	assert.Equal(t, DefaultMaxCategories, svc.max)
 	assert.WithinDuration(t, time.Now(), svc.now(), time.Minute)
+}
+
+func TestDeleteCategoryOfARecurrence(t *testing.T) {
+	store, usage, recurrences := newMemStore(), newMemUsage(), newMemUsage()
+	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }, Recurrences: recurrences})
+	ctx := context.Background()
+	rent, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Rent", Kind: "expense", Icon: "house", Color: "#AA0000"})
+	require.NoError(t, err)
+	home, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Home", Kind: "expense", Icon: "house", Color: "#00AA00"})
+	require.NoError(t, err)
+	recurrences.byCategory[rent.ID] = 1
+
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", rent.ID, ""), domain.ErrUsedByRecurrence, "no transactions yet, but a recurrence")
+	usage.byCategory[rent.ID] = 2
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", rent.ID, ""), domain.ErrCategoryInUse, "transactions first")
+
+	require.NoError(t, svc.Delete(ctx, "u1", rent.ID, home.ID))
+	assert.Equal(t, map[string]int{home.ID: 1}, recurrences.byCategory, "the recurrences move too")
+	assert.Equal(t, map[string]int{home.ID: 2}, usage.byCategory)
+	assert.Len(t, recurrences.moves, 2, "before and after the deletion")
+
+	other, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Other", Kind: "expense", Icon: "house", Color: "#0000AA"})
+	require.NoError(t, err)
+	recurrences.moveErr = errors.New("mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", home.ID, other.ID), "move recurrences: mongo down")
+	spare, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Spare", Kind: "expense", Icon: "house", Color: "#0000AA"})
+	require.NoError(t, err)
+	recurrences.moveErr, recurrences.err = nil, errors.New("mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", spare.ID, ""), "check category use: mongo down")
 }

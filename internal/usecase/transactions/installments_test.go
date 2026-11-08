@@ -114,7 +114,7 @@ func TestUpdateInScope(t *testing.T) {
 	// sending the same patch again completes it.
 	f.store.updateErr = errors.New("boom")
 	_, err = f.svc.Update(ctx, "u1", list[1].ID, domain.TransactionPatch{Description: ptr("x")}, domain.ScopeAll)
-	assert.ErrorContains(t, err, "update installments")
+	assert.ErrorContains(t, err, "update series")
 	now, err = f.store.Installments(ctx, "u1", "g1", 1)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"x", "Sofa", "Sofa", "Sofa"}, descriptions(now), "the first of the others only")
