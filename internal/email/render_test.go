@@ -19,7 +19,11 @@ func newRenderer(t *testing.T) *Renderer {
 }
 
 func TestCatalogIsComplete(t *testing.T) {
-	for _, tpl := range []Template{TemplateVerifyEmail, TemplateRegisterAttempt} {
+	all := []Template{
+		TemplateVerifyEmail, TemplateRegisterAttempt, TemplateResetPassword,
+		TemplatePasswordChanged, TemplateMFAEnabled, TemplateMFADisabled,
+	}
+	for _, tpl := range all {
 		for _, l := range i18n.Supported {
 			c, ok := catalog[tpl][l]
 			require.True(t, ok, "%s misses %s", tpl, l)
@@ -30,7 +34,7 @@ func TestCatalogIsComplete(t *testing.T) {
 			assert.NotEmpty(t, c.Footer, "%s %s footer", tpl, l)
 		}
 	}
-	assert.Len(t, catalog, 2, "add new templates to this test")
+	assert.Len(t, catalog, len(all), "add new templates to this test")
 }
 
 func TestRenderEveryTemplateAndLocale(t *testing.T) {
@@ -57,6 +61,10 @@ func TestRenderSubstitutesTheLinkLifetime(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, e.Text, "valid for 30 minutes")
 	assert.Contains(t, e.HTML, "valid for 30 minutes")
+
+	e, err = newRenderer(t).Render(Message{Locale: i18n.PtBR, Template: TemplateResetPassword, Link: "https://x.example/r", LinkTTL: 15 * time.Minute})
+	require.NoError(t, err)
+	assert.Contains(t, e.Text, "vale por 15 minutos")
 }
 
 func TestRenderEscapesTheLink(t *testing.T) {

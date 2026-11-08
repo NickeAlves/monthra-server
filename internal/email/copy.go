@@ -79,4 +79,135 @@ var catalog = map[Template]map[i18n.Locale]copyText{
 			Footer: "If it was not you, ignore this message. Nothing changed in your account.",
 		},
 	},
+	TemplateResetPassword: {
+		i18n.PtBR: {
+			Subject: "Redefina sua senha no Monthra",
+			Heading: "Redefinir senha",
+			Lines: []string{
+				"Recebemos um pedido para redefinir a senha da sua conta no Monthra.",
+				"Para escolher uma nova senha, use o botão abaixo. O link vale por {minutes} minutos e só pode ser usado uma vez. Ao trocar a senha, todas as sessões abertas são encerradas.",
+			},
+			Action: "Redefinir senha",
+			Footer: "Se você não pediu isso, ignore esta mensagem. Sua senha continua a mesma.",
+		},
+		i18n.EsES: {
+			Subject: "Restablece tu contraseña en Monthra",
+			Heading: "Restablecer contraseña",
+			Lines: []string{
+				"Recibimos una solicitud para restablecer la contraseña de tu cuenta en Monthra.",
+				"Para elegir una nueva contraseña, usa el botón de abajo. El enlace es válido durante {minutes} minutos y solo se puede usar una vez. Al cambiar la contraseña, se cierran todas las sesiones abiertas.",
+			},
+			Action: "Restablecer contraseña",
+			Footer: "Si no lo solicitaste, ignora este mensaje. Tu contraseña sigue siendo la misma.",
+		},
+		i18n.EnUS: {
+			Subject: "Reset your Monthra password",
+			Heading: "Reset your password",
+			Lines: []string{
+				"We received a request to reset the password of your Monthra account.",
+				"To choose a new password, use the button below. The link is valid for {minutes} minutes and can be used only once. Changing the password signs out every open session.",
+			},
+			Action: "Reset password",
+			Footer: "If you did not ask for this, ignore this message. Your password stays the same.",
+		},
+	},
+	TemplatePasswordChanged: {
+		i18n.PtBR: {
+			Subject: "Sua senha do Monthra foi alterada",
+			Heading: "Senha alterada",
+			Lines: []string{
+				"A senha da sua conta no Monthra acabou de ser alterada, e todas as sessões abertas foram encerradas.",
+				"Se não foi você, redefina a senha agora pelo botão abaixo.",
+			},
+			Action: "Redefinir senha",
+			Footer: "Se foi você, não precisa fazer mais nada.",
+		},
+		i18n.EsES: {
+			Subject: "Se cambió tu contraseña de Monthra",
+			Heading: "Contraseña cambiada",
+			Lines: []string{
+				"La contraseña de tu cuenta en Monthra acaba de cambiar y se cerraron todas las sesiones abiertas.",
+				"Si no fuiste tú, restablece la contraseña ahora con el botón de abajo.",
+			},
+			Action: "Restablecer contraseña",
+			Footer: "Si fuiste tú, no necesitas hacer nada más.",
+		},
+		i18n.EnUS: {
+			Subject: "Your Monthra password was changed",
+			Heading: "Password changed",
+			Lines: []string{
+				"The password of your Monthra account was just changed, and every open session was signed out.",
+				"If it was not you, reset your password now with the button below.",
+			},
+			Action: "Reset password",
+			Footer: "If it was you, there is nothing else to do.",
+		},
+	},
+	TemplateMFAEnabled: {
+		i18n.PtBR: {
+			Subject: "Verificação em duas etapas ativada no Monthra",
+			Heading: "Verificação em duas etapas ativada",
+			Lines: []string{
+				"A verificação em duas etapas foi ativada na sua conta no Monthra. A partir de agora, o login também pede um código do seu app autenticador.",
+				"Guarde os códigos de recuperação em um lugar seguro: eles são a única forma de entrar se você perder o app.",
+				"Se não foi você, redefina a senha agora pelo botão abaixo. Isso encerra todas as sessões abertas.",
+			},
+			Action: "Redefinir senha",
+			Footer: "Se foi você, não precisa fazer mais nada.",
+		},
+		i18n.EsES: {
+			Subject: "Verificación en dos pasos activada en Monthra",
+			Heading: "Verificación en dos pasos activada",
+			Lines: []string{
+				"Se activó la verificación en dos pasos en tu cuenta de Monthra. A partir de ahora, el inicio de sesión también pide un código de tu app de autenticación.",
+				"Guarda los códigos de recuperación en un lugar seguro: son la única forma de entrar si pierdes la app.",
+				"Si no fuiste tú, restablece la contraseña ahora con el botón de abajo. Eso cierra todas las sesiones abiertas.",
+			},
+			Action: "Restablecer contraseña",
+			Footer: "Si fuiste tú, no necesitas hacer nada más.",
+		},
+		i18n.EnUS: {
+			Subject: "Two-step verification turned on for Monthra",
+			Heading: "Two-step verification is on",
+			Lines: []string{
+				"Two-step verification was turned on for your Monthra account. From now on, signing in also asks for a code from your authenticator app.",
+				"Keep your recovery codes somewhere safe: they are the only way in if you lose the app.",
+				"If it was not you, reset your password now with the button below. That signs out every open session.",
+			},
+			Action: "Reset password",
+			Footer: "If it was you, there is nothing else to do.",
+		},
+	},
+	TemplateMFADisabled: {
+		i18n.PtBR: {
+			Subject: "Verificação em duas etapas desativada no Monthra",
+			Heading: "Verificação em duas etapas desativada",
+			Lines: []string{
+				"A verificação em duas etapas foi desativada na sua conta no Monthra. O login volta a pedir só o e-mail e a senha.",
+				"Se não foi você, redefina a senha agora pelo botão abaixo e ative a verificação de novo.",
+			},
+			Action: "Redefinir senha",
+			Footer: "Se foi você, não precisa fazer mais nada.",
+		},
+		i18n.EsES: {
+			Subject: "Verificación en dos pasos desactivada en Monthra",
+			Heading: "Verificación en dos pasos desactivada",
+			Lines: []string{
+				"Se desactivó la verificación en dos pasos en tu cuenta de Monthra. El inicio de sesión vuelve a pedir solo el correo y la contraseña.",
+				"Si no fuiste tú, restablece la contraseña ahora con el botón de abajo y vuelve a activar la verificación.",
+			},
+			Action: "Restablecer contraseña",
+			Footer: "Si fuiste tú, no necesitas hacer nada más.",
+		},
+		i18n.EnUS: {
+			Subject: "Two-step verification turned off for Monthra",
+			Heading: "Two-step verification is off",
+			Lines: []string{
+				"Two-step verification was turned off for your Monthra account. Signing in asks only for your email and password again.",
+				"If it was not you, reset your password now with the button below and turn the verification back on.",
+			},
+			Action: "Reset password",
+			Footer: "If it was you, there is nothing else to do.",
+		},
+	},
 }
