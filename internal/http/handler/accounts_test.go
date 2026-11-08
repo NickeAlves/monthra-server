@@ -24,6 +24,8 @@ type fakeAccounts struct {
 	input           domain.AccountInput
 	patch           domain.AccountPatch
 	deleted         bool
+	invoices        []domain.Invoice
+	from, to        domain.Month
 }
 
 func (f *fakeAccounts) List(_ context.Context, userID string, includeArchived bool, asOf domain.Date) ([]domain.AccountWithBalance, error) {
@@ -55,6 +57,11 @@ func (f *fakeAccounts) Update(_ context.Context, userID, id string, p domain.Acc
 func (f *fakeAccounts) Delete(_ context.Context, userID, id string) error {
 	f.userID, f.id, f.deleted = userID, id, f.err == nil
 	return f.err
+}
+
+func (f *fakeAccounts) Invoices(_ context.Context, userID, id string, from, to domain.Month, asOf domain.Date) ([]domain.Invoice, error) {
+	f.userID, f.id, f.from, f.to, f.asOf = userID, id, from, to, asOf
+	return f.invoices, f.err
 }
 
 func sampleCard() domain.AccountWithBalance {
@@ -246,10 +253,59 @@ func TestDeleteAccount(t *testing.T) {
 	assert.Equal(t, "account_in_use", problemOf(t, w).Code)
 }
 
+func TestListInvoices(t *testing.T) {
+	dec := domain.NewMonth(2026, 12)
+	svc := &fakeAccounts{invoices: []domain.Invoice{{
+		Month: dec, ClosingDate: day(t, "2026-11-25"), DueDate: day(t, "2026-12-05"), Status: domain.InvoiceClosed,
+		Currency: "BRL", PreviousBalance: 1500, Charges: 30000, Credits: 1000, Total: 30500, Paid: 500, Remaining: 30000,
+	}}}
+	w := serveAccounts(svc, request(http.MethodGet, "/accounts/a1/invoices?from=2026-12&to=2027-01&asOf=2026-11-30", ""))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	assert.Equal(t, "u1", svc.userID)
+	assert.Equal(t, "a1", svc.id)
+	assert.Equal(t, dec, svc.from)
+	assert.Equal(t, dec.AddMonths(1), svc.to)
+	assert.Equal(t, day(t, "2026-11-30"), svc.asOf)
+	assert.JSONEq(t, `{"invoices":[{
+		"month":"2026-12","closingDate":"2026-11-25","dueDate":"2026-12-05","status":"closed","currency":"BRL",
+		"previousBalance":1500,"charges":30000,"credits":1000,"total":30500,"paid":500,"remaining":30000
+	}]}`, w.Body.String())
+
+	svc = &fakeAccounts{}
+	w = serveAccounts(svc, request(http.MethodGet, "/accounts/a1/invoices", ""))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, svc.from.IsZero() && svc.to.IsZero() && svc.asOf.IsZero(), "the use case picks the open invoice")
+	assert.JSONEq(t, `{"invoices":[]}`, w.Body.String())
+
+	for query, want := range map[string]map[string]string{
+		"from=2026-1":             {"from": domain.CodeInvalid},
+		"to=2101-01":              {"to": domain.CodeOutOfRange},
+		"from=2026-12&to=2026-11": {"to": domain.CodeInvalid},
+		"asOf=2026-11-31":         {"asOf": domain.CodeInvalid},
+		"from=x&asOf=y":           {"from": domain.CodeInvalid, "asOf": domain.CodeInvalid},
+	} {
+		svc := &fakeAccounts{}
+		w := serveAccounts(svc, request(http.MethodGet, "/accounts/a1/invoices?"+query, ""))
+		require.Equal(t, http.StatusUnprocessableEntity, w.Code, query)
+		got := map[string]string{}
+		for _, f := range problemOf(t, w).Errors {
+			got[f.Field] = f.Code
+		}
+		assert.Equal(t, want, got, query)
+		assert.Empty(t, svc.userID, "%s: the use case is never reached", query)
+	}
+
+	w = serveAccounts(&fakeAccounts{err: domain.ErrNotFound}, request(http.MethodGet, "/accounts/a2/invoices", ""))
+	assert.Equal(t, http.StatusNotFound, w.Code, "an account that is no card")
+	assert.Equal(t, "not_found", problemOf(t, w).Code)
+}
+
 func TestAccountsNeedAPrincipal(t *testing.T) {
 	h := &Accounts{Service: &fakeAccounts{}, Logger: slog.New(slog.DiscardHandler)}
 	for name, fn := range map[string]http.HandlerFunc{
 		"list": h.List, "create": h.Create, "get": h.Get, "update": h.Update, "delete": h.Delete,
+		"invoices": h.Invoices,
 	} {
 		w := serve(fn, request(http.MethodGet, "/accounts", "{}"))
 		assert.Equal(t, http.StatusUnauthorized, w.Code, name)

@@ -143,6 +143,47 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Accoun
 	return s.withBalance(ctx, next, asOf)
 }
 
+// Invoices returns the invoices of one of the caller's credit cards, one per
+// month from from to to (both included), as they stand on day asOf (the
+// reader's today; zero is today in UTC). A zero bound takes the other one;
+// with both zero, the invoice open on asOf. An account that is not a card
+// has no invoices: it answers domain.ErrNotFound. A range of more than
+// domain.MaxInvoiceRange months is a *domain.ValidationError.
+func (s *Service) Invoices(ctx context.Context, userID, id string, from, to domain.Month, asOf domain.Date) ([]domain.Invoice, error) {
+	a, err := s.find(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !a.IsCard() {
+		return nil, fmt.Errorf("invoices of a %s account: %w", a.Type, domain.ErrNotFound)
+	}
+	day := s.today(asOf)
+	switch {
+	case from.IsZero() && to.IsZero():
+		from = a.Card.InvoiceFor(day)
+		to = from
+	case from.IsZero():
+		from = to
+	case to.IsZero():
+		to = from
+	}
+	var v domain.Validation
+	switch {
+	case to.Before(from):
+		v.Add("to", domain.CodeInvalid)
+	case to.Sub(from) >= domain.MaxInvoiceRange:
+		v.Add("to", domain.CodeOutOfRange)
+	}
+	if err := v.Err(); err != nil {
+		return nil, err
+	}
+	sums, err := s.ledger.InvoiceSums(ctx, userID, a.ID, to)
+	if err != nil {
+		return nil, fmt.Errorf("sum invoices: %w", err)
+	}
+	return domain.BuildInvoices(a, sums, from, to, day), nil
+}
+
 // Delete removes one of the caller's accounts, or answers
 // domain.ErrNotFound. An account with transactions (as their account or as
 // the destination of a transfer) answers domain.ErrAccountInUse: archiving
