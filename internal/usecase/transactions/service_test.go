@@ -17,15 +17,18 @@ var t0 = time.Date(2026, 11, 8, 12, 0, 0, 123456789, time.UTC)
 
 // memStore keeps transactions in memory, scoped by user like the real store.
 type memStore struct {
-	txs       map[string]domain.Transaction
-	order     []string
-	next      int
-	err       error
-	insertErr error
-	updates   int
-	lastLimit int
-	lastAfter *domain.TransactionCursor
-	lastQuery domain.TransactionFilter
+	txs         map[string]domain.Transaction
+	order       []string
+	next        int
+	err         error
+	insertErr   error
+	updateErr   error
+	updates     int
+	bulkUpdates int
+	groups      int
+	lastLimit   int
+	lastAfter   *domain.TransactionCursor
+	lastQuery   domain.TransactionFilter
 }
 
 func newMemStore() *memStore { return &memStore{txs: map[string]domain.Transaction{}} }
@@ -66,6 +69,57 @@ func (m *memStore) Delete(ctx context.Context, userID, id string) error {
 		return err
 	}
 	delete(m.txs, id)
+	return nil
+}
+
+func (m *memStore) InsertInstallments(ctx context.Context, ts []domain.Transaction) ([]domain.Transaction, error) {
+	m.groups++
+	out := make([]domain.Transaction, len(ts))
+	for i, t := range ts {
+		inst := *t.Installment
+		inst.GroupID = fmt.Sprintf("g%d", m.groups)
+		t.Installment = &inst
+		created, err := m.Insert(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = created
+	}
+	return out, nil
+}
+
+func (m *memStore) Installments(_ context.Context, userID, groupID string, from int) ([]domain.Transaction, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	var out []domain.Transaction
+	for _, id := range m.order {
+		t, ok := m.txs[id]
+		if ok && t.UserID == userID && t.Installment != nil && t.Installment.GroupID == groupID && t.Installment.Number >= from {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) UpdateMany(ctx context.Context, ts []domain.Transaction) error {
+	m.bulkUpdates++
+	for _, t := range ts {
+		if _, err := m.ByID(ctx, t.UserID, t.ID); err == nil {
+			m.txs[t.ID] = t
+		}
+	}
+	return m.updateErr
+}
+
+func (m *memStore) DeleteInstallments(ctx context.Context, userID, groupID string, from int) error {
+	list, err := m.Installments(ctx, userID, groupID, from)
+	if err != nil {
+		return err
+	}
+	for _, t := range list {
+		delete(m.txs, t.ID)
+	}
 	return nil
 }
 
@@ -258,44 +312,44 @@ func TestUpdateLooksUpOnlyWhatMoves(t *testing.T) {
 	require.NoError(t, err)
 
 	f.refs.lookups = nil
-	got, err := f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("bank"), CategoryID: ptr("food")})
+	got, err := f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("bank"), CategoryID: ptr("food")}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Equal(t, tx, got)
 	assert.Empty(t, f.refs.lookups, "the same references")
 	assert.Zero(t, f.store.updates, "nothing changed, nothing written")
 
-	got, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("dollars"), CategoryID: ptr("fun"), Amount: ptr(int64(1))})
+	got, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("dollars"), CategoryID: ptr("fun"), Amount: ptr(int64(1))}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"account:dollars", "category:fun"}, f.refs.lookups)
 	assert.Equal(t, "USD", got.Currency)
 	assert.Equal(t, 1, f.store.updates)
 	assert.Equal(t, got, f.store.txs[tx.ID])
 
-	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("bobs")})
+	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("bobs")}, domain.ScopeThis)
 	assert.Equal(t, map[string]string{"accountId": domain.CodeInvalid}, fields(t, err))
-	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("")})
+	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{AccountID: ptr("")}, domain.ScopeThis)
 	assert.Equal(t, map[string]string{"accountId": domain.CodeRequired}, fields(t, err))
 
-	_, err = f.svc.Update(ctx, "u2", tx.ID, domain.TransactionPatch{Amount: ptr(int64(2))})
+	_, err = f.svc.Update(ctx, "u2", tx.ID, domain.TransactionPatch{Amount: ptr(int64(2))}, domain.ScopeThis)
 	assert.ErrorIs(t, err, domain.ErrNotFound)
 
 	transfer, err := f.svc.Create(ctx, "u1", domain.TransactionInput{Kind: "transfer", AccountID: "bank", ToAccountID: "wallet", Amount: 10, Date: "2026-11-08"})
 	require.NoError(t, err)
 	f.refs.lookups = nil
-	_, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{ToAccountID: ptr("dollars"), ToAmount: ptr(int64(2)), CategoryID: ptr("food")})
+	_, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{ToAccountID: ptr("dollars"), ToAmount: ptr(int64(2)), CategoryID: ptr("food")}, domain.ScopeThis)
 	require.Error(t, err)
 	assert.Equal(t, map[string]string{"categoryId": domain.CodeInvalid}, fields(t, err))
 	assert.Equal(t, []string{"account:dollars"}, f.refs.lookups, "a transfer's category is never looked up")
-	got, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{ToAccountID: ptr("dollars"), ToAmount: ptr(int64(2))})
+	got, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{ToAccountID: ptr("dollars"), ToAmount: ptr(int64(2))}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), got.ToAmount)
 
 	f.refs.err = errors.New("timeout")
-	_, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{ToAccountID: ptr("wallet")})
+	_, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{ToAccountID: ptr("wallet")}, domain.ScopeThis)
 	assert.ErrorContains(t, err, "find account: timeout")
-	_, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{AccountID: ptr("wallet")})
+	_, err = f.svc.Update(ctx, "u1", transfer.ID, domain.TransactionPatch{AccountID: ptr("wallet")}, domain.ScopeThis)
 	assert.ErrorContains(t, err, "find account: timeout")
-	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{CategoryID: ptr("food")})
+	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{CategoryID: ptr("food")}, domain.ScopeThis)
 	assert.ErrorContains(t, err, "find category: timeout")
 }
 
@@ -309,17 +363,17 @@ func TestUpdateLooksUpTheCardOfAnInvoice(t *testing.T) {
 	assert.Equal(t, "2026-12", purchase.InvoiceMonth.String(), "the invoice of the day")
 
 	f.refs.lookups = nil
-	_, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Description: ptr("lunch"), Date: ptr("2026-11-24")})
+	_, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Description: ptr("lunch"), Date: ptr("2026-11-24")}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Empty(t, f.refs.lookups, "the same day needs no settings")
 
-	got, err := f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Date: ptr("2026-11-26")})
+	got, err := f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Date: ptr("2026-11-26")}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"account:card"}, f.refs.lookups, "a new day on a card needs its settings")
 	assert.Equal(t, "2027-01", got.InvoiceMonth.String())
 
 	f.refs.lookups = nil
-	got, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{InvoiceMonth: ptr("2027-02")})
+	got, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{InvoiceMonth: ptr("2027-02")}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"account:card"}, f.refs.lookups)
 	assert.Equal(t, "2027-02", got.InvoiceMonth.String())
@@ -328,10 +382,10 @@ func TestUpdateLooksUpTheCardOfAnInvoice(t *testing.T) {
 	plain, err := f.svc.Create(ctx, "u1", expense())
 	require.NoError(t, err)
 	f.refs.lookups = nil
-	_, err = f.svc.Update(ctx, "u1", plain.ID, domain.TransactionPatch{Date: ptr("2026-11-01")})
+	_, err = f.svc.Update(ctx, "u1", plain.ID, domain.TransactionPatch{Date: ptr("2026-11-01")}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Empty(t, f.refs.lookups, "a leg off a card has no invoice to pick")
-	_, err = f.svc.Update(ctx, "u1", plain.ID, domain.TransactionPatch{InvoiceMonth: ptr("2026-12")})
+	_, err = f.svc.Update(ctx, "u1", plain.ID, domain.TransactionPatch{InvoiceMonth: ptr("2026-12")}, domain.ScopeThis)
 	assert.Equal(t, map[string]string{"invoiceMonth": domain.CodeInvalid}, fields(t, err))
 	assert.Equal(t, []string{"account:bank"}, f.refs.lookups, "a named invoice needs the account")
 
@@ -341,15 +395,15 @@ func TestUpdateLooksUpTheCardOfAnInvoice(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2026-12", payment.ToInvoiceMonth.String())
 	f.refs.lookups = nil
-	got, err = f.svc.Update(ctx, "u1", payment.ID, domain.TransactionPatch{Date: ptr("2026-12-26")})
+	got, err = f.svc.Update(ctx, "u1", payment.ID, domain.TransactionPatch{Date: ptr("2026-12-26")}, domain.ScopeThis)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"account:card"}, f.refs.lookups, "only the card leg")
 	assert.Equal(t, "2027-01", got.ToInvoiceMonth.String())
 
 	f.refs.err = errors.New("timeout")
-	_, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Date: ptr("2026-11-01")})
+	_, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Date: ptr("2026-11-01")}, domain.ScopeThis)
 	assert.ErrorContains(t, err, "find account: timeout")
-	_, err = f.svc.Update(ctx, "u1", payment.ID, domain.TransactionPatch{ToInvoiceMonth: ptr("2026-12")})
+	_, err = f.svc.Update(ctx, "u1", payment.ID, domain.TransactionPatch{ToInvoiceMonth: ptr("2026-12")}, domain.ScopeThis)
 	assert.ErrorContains(t, err, "find account: timeout")
 }
 
@@ -365,9 +419,9 @@ func TestGetAndDelete(t *testing.T) {
 	_, err = f.svc.Get(ctx, "u2", tx.ID)
 	assert.ErrorIs(t, err, domain.ErrNotFound)
 
-	assert.ErrorIs(t, f.svc.Delete(ctx, "u2", tx.ID), domain.ErrNotFound)
-	require.NoError(t, f.svc.Delete(ctx, "u1", tx.ID))
-	assert.ErrorIs(t, f.svc.Delete(ctx, "u1", tx.ID), domain.ErrNotFound)
+	assert.ErrorIs(t, f.svc.Delete(ctx, "u2", tx.ID, domain.ScopeThis), domain.ErrNotFound)
+	require.NoError(t, f.svc.Delete(ctx, "u1", tx.ID, domain.ScopeThis))
+	assert.ErrorIs(t, f.svc.Delete(ctx, "u1", tx.ID, domain.ScopeThis), domain.ErrNotFound)
 }
 
 func TestList(t *testing.T) {

@@ -62,6 +62,9 @@ func Indexes() map[string][]mongo.IndexModel {
 			// and the sums of a card's invoices.
 			transactionsByInvoice("transactions_user_account_invoice_date_id", "account_id", "invoice_month"),
 			transactionsByInvoice("transactions_user_to_account_invoice_date_id", "to_account_id", "to_invoice_month"),
+			// The installments of a purchase: their listing and the edits and
+			// deletions of a group, which read at most MaxInstallments entries.
+			partial(transactionsBy("transactions_user_installment_date_id", "installment.group_id"), "installment.group_id"),
 		},
 		repo.CollRecurrences: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("recurrences_user")},
@@ -121,8 +124,12 @@ func transactionsBy(name string, fields ...string) mongo.IndexModel {
 // a leg on a credit card has an invoice, and the store never writes a null
 // one.
 func transactionsByInvoice(name, account, invoice string) mongo.IndexModel {
-	m := transactionsBy(name, account, invoice)
-	m.Options.SetPartialFilterExpression(bson.D{{Key: invoice, Value: bson.D{{Key: "$exists", Value: true}}}})
+	return partial(transactionsBy(name, account, invoice), invoice)
+}
+
+// partial limits index m to the documents that hold field.
+func partial(m mongo.IndexModel, field string) mongo.IndexModel {
+	m.Options.SetPartialFilterExpression(bson.D{{Key: field, Value: bson.D{{Key: "$exists", Value: true}}}})
 	return m
 }
 

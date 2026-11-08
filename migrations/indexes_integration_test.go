@@ -66,8 +66,11 @@ func TestApplyCreatesIndexesIdempotently(t *testing.T) {
 	require.NotNil(t, defaults.Unique)
 	assert.True(t, *defaults.Unique, "one default category per key and user")
 
-	// Only the card legs carry an invoice.
-	for _, name := range []string{"transactions_user_account_invoice_date_id", "transactions_user_to_account_invoice_date_id"} {
+	// Only the card legs carry an invoice, and only installments a group.
+	for _, name := range []string{
+		"transactions_user_account_invoice_date_id", "transactions_user_to_account_invoice_date_id",
+		"transactions_user_installment_date_id",
+	} {
 		raw, err := db.Collection(repo.CollTransactions).Indexes().List(ctx)
 		require.NoError(t, err)
 		var all []bson.M

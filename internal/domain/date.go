@@ -54,3 +54,11 @@ func (d Date) Before(o Date) bool { return d.t.Before(o.t) }
 
 // Equal reports whether d and o are the same day.
 func (d Date) Equal(o Date) bool { return d.t.Equal(o.t) }
+
+// Day returns the day of the month of d.
+func (d Date) Day() int { return d.t.Day() }
+
+// AddMonths returns the same day k months later (earlier when k < 0), or
+// the last day of that month when it is shorter: January 31 plus one month
+// is February 28 (29 in a leap year), plus two is March 31.
+func (d Date) AddMonths(k int) Date { return MonthOf(d).AddMonths(k).Day(d.Day()) }

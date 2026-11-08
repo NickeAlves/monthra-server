@@ -91,8 +91,10 @@ func (s *Service) List(ctx context.Context, userID string, q Query) (Page, error
 	return page, nil
 }
 
-// Create validates and stores a new transaction. The accounts and the
-// category it names are looked up among the caller's records only.
+// Create validates and stores a new transaction, or the installments of a
+// purchase (in.Installments), and returns it or the first installment. The
+// accounts and the category it names are looked up among the caller's
+// records only.
 func (s *Service) Create(ctx context.Context, userID string, in domain.TransactionInput) (domain.Transaction, error) {
 	kind := domain.TransactionKind(in.Kind)
 	var refs domain.TransactionRefs
@@ -107,16 +109,25 @@ func (s *Service) Create(ctx context.Context, userID string, in domain.Transacti
 	} else if refs.Category, err = s.category(ctx, userID, in.CategoryID); err != nil {
 		return domain.Transaction{}, err
 	}
-	t, err := domain.NewTransaction(userID, in, refs, s.clock())
+	ts, err := domain.NewTransactions(userID, in, refs, s.clock())
 	if err != nil {
 		return domain.Transaction{}, err
 	}
-	created, err := s.store.Insert(ctx, t)
+	var created []domain.Transaction
+	if len(ts) == 1 {
+		var t domain.Transaction
+		t, err = s.store.Insert(ctx, ts[0])
+		created = []domain.Transaction{t}
+	} else {
+		created, err = s.store.InsertInstallments(ctx, ts)
+	}
 	if err != nil {
 		return domain.Transaction{}, fmt.Errorf("create transaction: %w", err)
 	}
-	s.metrics.TransactionCreated(string(created.Kind))
-	return created, nil
+	for _, t := range created {
+		s.metrics.TransactionCreated(string(t.Kind))
+	}
+	return created[0], nil
 }
 
 // Get returns one of the caller's transactions, or domain.ErrNotFound.
@@ -129,10 +140,13 @@ func (s *Service) Get(ctx context.Context, userID, id string) (domain.Transactio
 }
 
 // Update applies a patch to one of the caller's transactions and returns
-// it. Only the records the patch moves it to are looked up, and the card a
-// leg stays on when the patch moves its day or names its invoice (for the
-// card's settings); a patch that changes nothing writes nothing.
-func (s *Service) Update(ctx context.Context, userID, id string, p domain.TransactionPatch) (domain.Transaction, error) {
+// it. On an installment, scope reaches the next installments of its
+// purchase (ScopeFuture) or all of them (ScopeAll), which take the changes
+// the patch made to this one (domain.TransactionPatch.ApplyInScope). Only
+// the records the patch moves it to are looked up, and the card a leg stays
+// on when the patch moves its day or names its invoice (for the card's
+// settings); a patch that changes nothing writes nothing.
+func (s *Service) Update(ctx context.Context, userID, id string, p domain.TransactionPatch, scope domain.EditScope) (domain.Transaction, error) {
 	current, err := s.Get(ctx, userID, id)
 	if err != nil {
 		return domain.Transaction{}, err
@@ -163,26 +177,68 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 			return domain.Transaction{}, err
 		}
 	}
-	next, changed, err := p.Apply(current, refs, s.clock())
+	var others []domain.Transaction
+	if from, ok := reach(current, scope); ok {
+		if others, err = s.store.Installments(ctx, userID, current.Installment.GroupID, from); err != nil {
+			return domain.Transaction{}, fmt.Errorf("find installments: %w", err)
+		}
+	}
+	next, changed, err := p.ApplyInScope(current, scope, others, refs, s.clock())
 	if err != nil {
 		return domain.Transaction{}, err
 	}
-	if !changed {
+	switch len(changed) {
+	case 0:
 		return current, nil
+	case 1:
+		err = s.store.Update(ctx, changed[0])
+	default:
+		// Independent writes: sending the same patch again completes them,
+		// since the others follow from this installment.
+		err = s.store.UpdateMany(ctx, changed)
 	}
-	if err := s.store.Update(ctx, next); err != nil {
+	if err != nil {
 		return domain.Transaction{}, fmt.Errorf("update transaction: %w", err)
 	}
 	return next, nil
 }
 
-// Delete removes one of the caller's transactions, or answers
-// domain.ErrNotFound.
-func (s *Service) Delete(ctx context.Context, userID, id string) error {
+// Delete removes one of the caller's transactions or, on an installment,
+// the next installments of its purchase too (ScopeFuture) or all of them
+// (ScopeAll); the others keep their numbers. It answers domain.ErrNotFound
+// for a transaction the caller does not hold.
+func (s *Service) Delete(ctx context.Context, userID, id string, scope domain.EditScope) error {
+	if scope != domain.ScopeThis {
+		current, err := s.Get(ctx, userID, id)
+		if err != nil {
+			return err
+		}
+		if from, ok := reach(current, scope); ok {
+			if err := s.store.DeleteInstallments(ctx, userID, current.Installment.GroupID, from); err != nil {
+				return fmt.Errorf("delete installments: %w", err)
+			}
+			return nil
+		}
+	}
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete transaction: %w", err)
 	}
 	return nil
+}
+
+// reach returns the first installment number scope reaches from t, and
+// false when it reaches t alone (ScopeThis, or t outside a purchase).
+func reach(t domain.Transaction, scope domain.EditScope) (int, bool) {
+	switch {
+	case t.Installment == nil:
+		return 0, false
+	case scope == domain.ScopeFuture:
+		return t.Installment.Number, true
+	case scope == domain.ScopeAll:
+		return 1, true
+	default:
+		return 0, false
+	}
 }
 
 // needsCard reports whether a leg that stays on its account needs that

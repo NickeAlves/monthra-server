@@ -18,8 +18,8 @@ type TransactionsService interface {
 	List(ctx context.Context, userID string, q transactions.Query) (transactions.Page, error)
 	Create(ctx context.Context, userID string, in domain.TransactionInput) (domain.Transaction, error)
 	Get(ctx context.Context, userID, id string) (domain.Transaction, error)
-	Update(ctx context.Context, userID, id string, p domain.TransactionPatch) (domain.Transaction, error)
-	Delete(ctx context.Context, userID, id string) error
+	Update(ctx context.Context, userID, id string, p domain.TransactionPatch, scope domain.EditScope) (domain.Transaction, error)
+	Delete(ctx context.Context, userID, id string, scope domain.EditScope) error
 }
 
 // Transactions serves /api/v1/transactions, always for the caller of the
@@ -39,7 +39,7 @@ func (h *Transactions) Mount(r chi.Router) {
 	r.Delete("/transactions/{id}", h.Delete)
 }
 
-// List handles GET /transactions?from&to&accountId&categoryId&kind&tag&q&limit&cursor.
+// List handles GET /transactions?from&to&accountId&categoryId&kind&tag&q&invoice&installmentGroupId&limit&cursor.
 func (h *Transactions) List(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
@@ -58,7 +58,8 @@ func (h *Transactions) List(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewTransactions(page.Items, page.Next))
 }
 
-// Create handles POST /transactions.
+// Create handles POST /transactions; a purchase in installments answers
+// its first installment.
 func (h *Transactions) Create(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
@@ -90,17 +91,22 @@ func (h *Transactions) Get(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewTransaction(t))
 }
 
-// Update handles PATCH /transactions/{id}.
+// Update handles PATCH /transactions/{id}?scope=this|future|all.
 func (h *Transactions) Update(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
+		return
+	}
+	scope, err := dto.ParseEditScope(r.URL.Query().Get("scope"))
+	if err != nil {
+		writeError(w, r, h.Logger, err)
 		return
 	}
 	var req dto.UpdateTransactionRequest
 	if !decodeBody(w, r, h.Logger, &req) {
 		return
 	}
-	t, err := h.Service.Update(r.Context(), p.UserID, chi.URLParam(r, "id"), req.Patch())
+	t, err := h.Service.Update(r.Context(), p.UserID, chi.URLParam(r, "id"), req.Patch(), scope)
 	if err != nil {
 		writeError(w, r, h.Logger, err)
 		return
@@ -108,13 +114,18 @@ func (h *Transactions) Update(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewTransaction(t))
 }
 
-// Delete handles DELETE /transactions/{id}.
+// Delete handles DELETE /transactions/{id}?scope=this|future|all.
 func (h *Transactions) Delete(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
 		return
 	}
-	if err := h.Service.Delete(r.Context(), p.UserID, chi.URLParam(r, "id")); err != nil {
+	scope, err := dto.ParseEditScope(r.URL.Query().Get("scope"))
+	if err != nil {
+		writeError(w, r, h.Logger, err)
+		return
+	}
+	if err := h.Service.Delete(r.Context(), p.UserID, chi.URLParam(r, "id"), scope); err != nil {
 		writeError(w, r, h.Logger, err)
 		return
 	}
