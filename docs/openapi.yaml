@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -94,6 +94,27 @@ info:
     - Wrong passwords and codes here answer `403` (`password_incorrect`, `mfa_code_invalid`) and
       count toward the lockout of the address.
 
+    ## Money
+
+    - Every amount is an **integer in minor units** (cents) of its currency:
+      `"initialBalance": 150000` is R$ 1,500.00. Never a float, never a decimal string.
+      Amounts are bounded by 10^13 in absolute value, so totals stay exact in clients that
+      hold numbers as doubles (JavaScript, Dart on the web).
+    - Each account has its own currency (`BRL`, `USD` or `EUR`), fixed when it is created.
+      Totals are grouped by currency; nothing is converted.
+
+    ## Accounts (`/api/v1/accounts`)
+
+    - Accounts are `checking`, `savings`, `credit_card`, `cash` or `brokerage`. A credit card
+      needs `card` (closing day, due day, optional limit); the other types refuse it.
+    - `type` and `currency` never change (they are not fields of the `PATCH`): create another
+      account instead.
+    - `PATCH` with `"archived": true` hides an account from `GET /accounts`; it comes back with
+      `?includeArchived=true` and with `"archived": false`. An archived account keeps its history.
+    - One user holds at most 100 accounts, archived ones included (`409 limit_reached`).
+    - Every route acts on the caller's accounts only: another user's account answers `404`,
+      exactly like one that does not exist.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
@@ -113,6 +134,8 @@ tags:
     description: Authentication and browser session protection
   - name: me
     description: The caller's own account, preferences, password and sessions
+  - name: accounts
+    description: The caller's money accounts (bank, savings, credit card, cash, brokerage)
 paths:
   /healthz:
     get:
@@ -775,6 +798,162 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/accounts:
+    get:
+      tags: [accounts]
+      summary: List the accounts
+      description: Oldest first. Archived accounts only with `includeArchived=true`.
+      operationId: listAccounts
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: includeArchived
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: "The accounts, every one of them (at most 100; `Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountList"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [accounts]
+      summary: Create an account
+      operationId: createAccount
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The path of the new account.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/LimitReached"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [accounts]
+      summary: Read an account
+      operationId: getAccount
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The account (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [accounts]
+      summary: Change an account
+      description: |
+        Absent fields stay as they are; `card` replaces the whole settings (an absent `limit`
+        removes the limit). `type`, `currency` and `source` are not fields: sending them answers
+        `400`. A change that changes nothing answers the account as it is.
+      operationId: updateAccount
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountPatch"
+      responses:
+        "200":
+          description: The account after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [accounts]
+      summary: Delete an account
+      description: Deletes the account for good. To keep its history, archive it instead.
+      operationId: deleteAccount
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     bearerAuth:
@@ -871,7 +1050,22 @@ components:
     ValidationFailed:
       description: |
         Invalid fields (`validation_failed`), listed in `errors` with codes `required`,
-        `invalid`, `too_short`, `too_long` or `breached`.
+        `invalid`, `too_short`, `too_long`, `out_of_range` (an amount or a day outside its
+        bounds) or `breached`. Nested fields are dotted (`card.closingDay`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: |
+        Not one of the caller's records (`not_found`): another user's record answers exactly
+        like one that does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    LimitReached:
+      description: The caller already holds the maximum number of these records (`limit_reached`).
       content:
         application/problem+json:
           schema:
@@ -1195,6 +1389,114 @@ components:
               current:
                 type: boolean
                 description: The session of this request.
+    CardSettings:
+      type: object
+      additionalProperties: false
+      required: [closingDay, dueDay]
+      properties:
+        closingDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Day of the month the statement closes; in a shorter month, its last day.
+        dueDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Day of the month the statement falls due; in a shorter month, its last day.
+        limit:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+          maximum: 10000000000000
+          description: Credit limit in minor units, when set.
+    AccountCreate:
+      type: object
+      additionalProperties: false
+      required: [name, type, currency]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        type:
+          type: string
+          enum: [checking, savings, credit_card, cash, brokerage]
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+          description: Fixed for the life of the account. Clients usually suggest the preferred currency.
+        initialBalance:
+          type: integer
+          format: int64
+          default: 0
+          minimum: -10000000000000
+          maximum: 10000000000000
+          description: Balance before any transaction, in minor units. Negative for an overdraft or a card's debt.
+        card:
+          description: Required for `credit_card`, refused for every other type.
+          oneOf:
+            - $ref: "#/components/schemas/CardSettings"
+            - type: "null"
+    AccountPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        initialBalance:
+          type: integer
+          format: int64
+          minimum: -10000000000000
+          maximum: 10000000000000
+        card:
+          description: Credit cards only. Replaces the whole settings.
+          $ref: "#/components/schemas/CardSettings"
+        archived:
+          type: boolean
+    Account:
+      type: object
+      required: [id, name, type, currency, initialBalance, card, source, archived, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [checking, savings, credit_card, cash, brokerage]
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        initialBalance:
+          type: integer
+          format: int64
+          description: In minor units of `currency`.
+        card:
+          oneOf:
+            - $ref: "#/components/schemas/CardSettings"
+            - type: "null"
+        source:
+          type: string
+          enum: [manual, open_finance]
+        archived:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AccountList:
+      type: object
+      required: [accounts]
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Account"
     CsrfToken:
       type: object
       required: [csrfToken]
@@ -1256,6 +1558,7 @@ components:
             - mfa_already_enabled
             - mfa_not_enabled
             - mfa_setup_required
+            - limit_reached
         requestId:
           type: string
         errors:

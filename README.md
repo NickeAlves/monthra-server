@@ -142,6 +142,18 @@ Every `/api/v1/me` route acts on the caller of the access token; none takes a us
 - **Sessions:** `GET /me/sessions` lists up to 100 active sessions (IP, user agent, `current`), the most recently used first. `DELETE /me/sessions/{id}` signs one out; another user's session answers `404` like an unknown one, and repeating the request is safe. `DELETE /me/sessions` signs out all but the current one. Revoking many sessions denies them in Redis before revoking them in MongoDB, so a Redis failure leaves nothing half done and a retry works.
 - **Account deletion (LGPD):** `DELETE /me` takes the password and, with MFA on, a code. It denies every session, runs the registered `UserDataEraser`s in order (feature data first, then the auth stores and the locale cache) and deletes the account last. Each step is idempotent and there is no transaction, so an interrupted deletion leaves an account its owner can sign in to and delete again. The owner gets a confirmation email and the address can sign up again. The audit log is kept until `AUDIT_LOG_TTL`: access records must be retained (Marco Civil art. 15, LGPD art. 16), and they hold no address.
 
+## Accounts
+
+The money accounts of the caller: `/api/v1/accounts` and `/api/v1/accounts/{id}`.
+
+- **Money:** every amount is an integer in minor units (cents) in MongoDB and in the API, never a float or a decimal string (`150000` is R$ 1,500.00). Amounts are bounded by `domain.MaxAmount` (10^13), so totals stay exact in JavaScript and Dart on the web, which hold integers exactly only up to 2^53.
+- **Currency per account:** `BRL`, `USD` or `EUR`, chosen at creation and never changed, like the type (`checking`, `savings`, `credit_card`, `cash`, `brokerage`). Totals are grouped by currency; nothing is converted.
+- **Credit cards** carry their closing day, due day (1 to 31; a shorter month uses its last day) and an optional limit; the other types refuse those settings.
+- **Archive or delete:** `PATCH {"archived": true}` hides an account from the default list (`?includeArchived=true` shows it) and keeps its history. `DELETE` removes it for good.
+- **Limits:** at most 100 accounts per user, archived ones included (`409 limit_reached`); the list comes back whole, without pagination.
+- **Ownership:** every query filters by the record id and the caller's `user_id`, which only ever comes from the access token. Another user's account answers `404` like an unknown one, and the bodies reject unknown fields, so no client can choose an owner or set a `$` operator.
+- `DELETE /me` erases the accounts before the auth data.
+
 ## Browser security
 
 - **CORS:** only `CORS_ALLOWED_ORIGINS` get CORS headers (with credentials). A preflight from any other origin gets 403.
@@ -164,7 +176,7 @@ internal/app/         wiring, servers and graceful shutdown
 internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
-internal/usecase/     use cases on ports (auth/, profile/)
+internal/usecase/     use cases on ports (auth/, profile/, accounts/)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates
