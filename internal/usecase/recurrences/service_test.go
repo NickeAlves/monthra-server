@@ -138,8 +138,18 @@ func (m *memStore) AccountUsage(_ context.Context, userID, id string) (bool, boo
 // memLedger stores occurrences once per recurrence and rule day, as the
 // unique index does.
 type memLedger struct {
-	stored []domain.Transaction
-	err    error
+	stored     []domain.Transaction
+	err        error
+	earlierErr error
+}
+
+func (l *memLedger) HasOccurrencesBefore(_ context.Context, _, recurrenceID string, day domain.Date) (bool, error) {
+	if l.earlierErr != nil {
+		return false, l.earlierErr
+	}
+	return slices.ContainsFunc(l.stored, func(o domain.Transaction) bool {
+		return o.Recurrence.ID == recurrenceID && o.Recurrence.Date.Before(day)
+	}), nil
 }
 
 func (l *memLedger) InsertOccurrences(_ context.Context, ts []domain.Transaction) (int, error) {
@@ -612,4 +622,34 @@ func TestNewServiceDefaults(t *testing.T) {
 	assert.NotNil(t, svc.now())
 	svc.metrics.TransactionCreated("expense")
 	svc.Materialize(context.Background(), "u1", domain.Date{})
+}
+
+func TestEndBeforeKeepsAMovedRecurrence(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture()
+	r, err := f.svc.Create(ctx, "u1", rent("2026-08-05"), domain.Date{})
+	require.NoError(t, err)
+	require.Len(t, f.ledger.stored, 4, "August to November")
+	// The start moves past them: they stay, linked to the recurrence.
+	_, err = f.svc.Update(ctx, "u1", r.ID, domain.RecurrencePatch{StartDate: ptr("2027-01-10")}, domain.Date{})
+	require.NoError(t, err)
+	occurrence := f.ledger.stored[2]
+	occurrence.UserID = "u1"
+
+	f.ledger.earlierErr = errors.New("mongo down")
+	assert.Error(t, f.svc.EndBefore(ctx, occurrence))
+	f.ledger.earlierErr = nil
+
+	// Cutting before the start with August and September left: ended, kept.
+	require.NoError(t, f.svc.EndBefore(ctx, occurrence))
+	kept := f.store.recs[r.ID]
+	assert.Equal(t, "2026-10-04", kept.Rule.End.String())
+	assert.Equal(t, "2027-01-10", kept.Rule.Start.String())
+	assert.False(t, kept.Active())
+
+	// From the first one, nothing is left before the cut: it goes.
+	first := f.ledger.stored[0]
+	first.UserID = "u1"
+	require.NoError(t, f.svc.EndBefore(ctx, first))
+	assert.NotContains(t, f.store.recs, r.ID)
 }

@@ -355,6 +355,17 @@ func (r *Transactions) Occurrences(ctx context.Context, userID, recurrenceID str
 	return out, nil
 }
 
+// HasOccurrencesBefore reports whether recurrence recurrenceID of userID has
+// occurrences whose rule day comes before day.
+func (r *Transactions) HasOccurrencesBefore(ctx context.Context, userID, recurrenceID string, day domain.Date) (bool, error) {
+	filter, err := inRecurrence(userID, recurrenceID, domain.Date{})
+	if err != nil {
+		return false, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	filter = append(filter, bson.E{Key: "occurrence_date", Value: bson.D{{Key: "$lt", Value: day.Time()}}})
+	return r.exists(ctx, filter)
+}
+
 // DeleteOccurrences removes the occurrences of recurrence recurrenceID of
 // userID whose rule day is from or later (all of them when from is zero);
 // deleting them again is a no-op.

@@ -213,8 +213,11 @@ info:
       `toAmount`. An occurrence moved to another account picks its invoice again by its own
       day. Its `date` and invoice change with `scope=this` only (`scope: invalid`); the days
       of the next ones change with the rule. `DELETE ?scope=future` ends the recurrence
-      before the occurrence and deletes it and the later ones; `?scope=all` deletes the
-      recurrence and every occurrence.
+      before the occurrence and deletes it and the later ones. When that leaves the rule no
+      day (the occurrence is on or before `startDate`), the recurrence goes, unless
+      occurrences from before it remain (a `startDate` moved past them): it then stays,
+      ended, with no `nextDate` and an `endDate` before its `startDate`. `?scope=all` deletes
+      the recurrence and every occurrence.
     - An account an active recurrence names cannot be archived, and one any recurrence names
       cannot be deleted (`409 used_by_recurrence`); a category one names cannot be deleted
       without `reassignTo`, which moves the recurrences too.

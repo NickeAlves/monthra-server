@@ -307,20 +307,38 @@ func TestRecurrenceFollow(t *testing.T) {
 
 func TestRecurrenceEndBefore(t *testing.T) {
 	r := rent(t, "2026-11-05")
-	ended, keep := r.EndBefore(day(t, "2026-10-05"), txNow)
+	ended, keep := r.EndBefore(day(t, "2026-10-05"), false, txNow)
 	require.True(t, keep)
 	assert.Equal(t, "2026-10-04", ended.Rule.End.String())
 	assert.False(t, ended.Active())
 
 	future := rent(t, "")
 	future.Rule.End = day(t, "2027-01-05")
-	ended, keep = future.EndBefore(day(t, "2027-03-05"), txNow)
+	ended, keep = future.EndBefore(day(t, "2027-03-05"), false, txNow)
 	require.True(t, keep)
 	assert.Equal(t, "2027-01-05", ended.Rule.End.String(), "an earlier end stays")
 	assert.True(t, ended.Active())
 
-	_, keep = r.EndBefore(day(t, "2026-08-05"), txNow)
+	_, keep = r.EndBefore(day(t, "2026-08-05"), false, txNow)
 	assert.False(t, keep, "nothing would be left")
+
+	// A start moved past older occurrences (August to November): cutting
+	// on or before it keeps the recurrence, ended, so those occurrences
+	// still name it.
+	moved := rent(t, "2026-11-05")
+	moved.Rule.Start, moved.Next = day(t, "2027-02-05"), day(t, "2027-02-05")
+	ended, keep = moved.EndBefore(day(t, "2026-10-05"), true, txNow)
+	require.True(t, keep)
+	assert.Equal(t, "2026-10-04", ended.Rule.End.String(), "before the start")
+	assert.False(t, ended.Active())
+	assert.Equal(t, "2027-02-05", ended.Rule.Start.String())
+	assert.Equal(t, txNow.UTC(), ended.UpdatedAt)
+	_, keep = moved.EndBefore(day(t, "2026-10-05"), false, txNow)
+	assert.False(t, keep, "nothing before the cut")
+	ended, keep = moved.EndBefore(day(t, "2027-02-05"), true, txNow)
+	require.True(t, keep)
+	assert.Equal(t, "2027-02-04", ended.Rule.End.String())
+	assert.False(t, ended.Active())
 }
 
 // occurrences returns the occurrences of r through day through as the

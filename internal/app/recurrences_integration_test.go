@@ -192,6 +192,20 @@ func TestRecurrencesEndToEnd(t *testing.T) {
 	require.Equal(t, http.StatusOK, r.status)
 	assert.Nil(t, r.body["nextDate"], "ended")
 	assert.Equal(t, start.AddMonths(2).AddDays(-1).String(), r.str("endDate"))
+
+	// Moved to start next month, then cut before that start: the first rent
+	// is left, so the recurrence stays, ended, instead of going.
+	r = call(t, native, http.MethodPatch, recs+"/"+rentID, map[string]any{"startDate": today.AddMonths(1).String(), "endDate": ""}, asAna)
+	require.Equal(t, http.StatusOK, r.status, r.body)
+	require.Equal(t, today.AddMonths(1).String(), r.str("nextDate"))
+	r = call(t, native, http.MethodDelete, txs+"/"+history[1].id+"?scope=future", nil, asAna)
+	require.Equal(t, http.StatusNoContent, r.status, r.body)
+	assert.Equal(t, []string{start.String()}, days(occurrencesOf(t, native, txs, rentID, asAna)))
+	r = call(t, native, http.MethodGet, recs+"/"+rentID, nil, asAna)
+	require.Equal(t, http.StatusOK, r.status, "kept for the rent left")
+	assert.Nil(t, r.body["nextDate"])
+	assert.Equal(t, start.AddMonths(1).AddDays(-1).String(), r.str("endDate"))
+	assert.Equal(t, today.AddMonths(1).String(), r.str("startDate"))
 	r = call(t, native, http.MethodPatch, accounts+"/"+bank, map[string]any{"archived": true}, asAna)
 	assert.Equal(t, http.StatusConflict, r.status, "the saving still runs on it")
 

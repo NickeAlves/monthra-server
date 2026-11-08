@@ -385,14 +385,21 @@ func (s *Service) Follow(ctx context.Context, before, after domain.Transaction) 
 }
 
 // EndBefore ends the recurrence of an occurrence on the day before the
-// occurrence's rule day, so it creates nothing from there on; when that
-// leaves it no day at all, the recurrence goes.
+// occurrence's rule day, so it creates nothing from there on. When that
+// leaves it no day at all, the recurrence goes, unless occurrences from
+// before that day remain: then it stays, ended, so they still name it.
 func (s *Service) EndBefore(ctx context.Context, occurrence domain.Transaction) error {
 	r, ok, err := s.recurrenceOf(ctx, occurrence)
 	if err != nil || !ok {
 		return err
 	}
-	next, keep := r.EndBefore(occurrence.Recurrence.Date, s.clock())
+	day, hasEarlier := occurrence.Recurrence.Date, false
+	if !r.Rule.Start.Before(day) {
+		if hasEarlier, err = s.ledger.HasOccurrencesBefore(ctx, r.UserID, r.ID, day); err != nil {
+			return fmt.Errorf("find earlier occurrences: %w", err)
+		}
+	}
+	next, keep := r.EndBefore(day, hasEarlier, s.clock())
 	if !keep {
 		return ignoreGone(s.store.Delete(ctx, r.UserID, r.ID), "delete recurrence")
 	}
