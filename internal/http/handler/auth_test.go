@@ -34,6 +34,11 @@ type fakeAuth struct {
 	register  authuc.RegisterInput
 	reset     authuc.ResetPasswordInput
 	login     authuc.LoginInput
+	challenge *authuc.Challenge
+	verify    authuc.VerifyMFAInput
+	disable   authuc.DisableMFAInput
+	password  string
+	code      string
 	token     string
 	email     string
 	principal auth.Principal
@@ -65,9 +70,32 @@ func (f *fakeAuth) ResetPassword(_ context.Context, in authuc.ResetPasswordInput
 	return f.err
 }
 
-func (f *fakeAuth) Login(_ context.Context, in authuc.LoginInput, c authuc.Client) (authuc.Tokens, error) {
+func (f *fakeAuth) Login(_ context.Context, in authuc.LoginInput, c authuc.Client) (authuc.LoginResult, error) {
 	f.login, f.client = in, c
+	if f.challenge != nil {
+		return authuc.LoginResult{Challenge: f.challenge}, f.err
+	}
+	return authuc.LoginResult{Tokens: issued}, f.err
+}
+
+func (f *fakeAuth) VerifyMFA(_ context.Context, in authuc.VerifyMFAInput, _ authuc.Client) (authuc.Tokens, error) {
+	f.verify = in
 	return issued, f.err
+}
+
+func (f *fakeAuth) SetupMFA(_ context.Context, p auth.Principal, password string, _ authuc.Client) (authuc.MFASetup, error) {
+	f.principal, f.password = p, password
+	return authuc.MFASetup{Secret: "JBSWY3DPEHPK3PXP", URI: "otpauth://totp/x", ExpiresAt: t0.Add(15 * time.Minute)}, f.err
+}
+
+func (f *fakeAuth) EnableMFA(_ context.Context, p auth.Principal, code string, _ authuc.Client) ([]string, error) {
+	f.principal, f.code = p, code
+	return []string{"aaaa-bbbb-cccc-dddd"}, f.err
+}
+
+func (f *fakeAuth) DisableMFA(_ context.Context, p auth.Principal, in authuc.DisableMFAInput, _ authuc.Client) error {
+	f.principal, f.disable = p, in
+	return f.err
 }
 
 func (f *fakeAuth) Refresh(_ context.Context, token string, _ authuc.Client) (authuc.Tokens, error) {
@@ -319,6 +347,104 @@ func TestErrorMapping(t *testing.T) {
 		if tc.status == http.StatusTooManyRequests {
 			assert.Equal(t, "62", w.Header().Get("Retry-After"))
 		}
+	}
+}
+
+func TestLoginWithMFAAnswersAChallenge(t *testing.T) {
+	svc := &fakeAuth{challenge: &authuc.Challenge{Token: "mfa-token", ExpiresAt: t0.Add(5 * time.Minute)}}
+	for name, mutate := range map[string]func(*http.Request){"browser": fromBrowser, "native": func(*http.Request) {}} {
+		w := serve(newAuthHandler(svc).Login, post("/api/v1/auth/login", `{"email":"ana@example.com","password":"pw"}`, mutate))
+		assert.Equal(t, http.StatusOK, w.Code, name)
+		assert.Equal(t, "no-store", w.Header().Get("Cache-Control"), name)
+		assert.Empty(t, cookiesOf(w), "%s: no cookies before the second factor", name)
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+		assert.Equal(t, map[string]any{"mfaRequired": true, "mfaToken": "mfa-token", "expiresIn": float64(300)}, body, name)
+	}
+}
+
+func TestVerifyMFADeliversTheSession(t *testing.T) {
+	svc := &fakeAuth{}
+	w := serve(newAuthHandler(svc).VerifyMFA, post("/api/v1/auth/mfa/verify", `{"mfaToken":"m","code":"123456"}`, fromBrowser))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, authuc.VerifyMFAInput{Token: "m", Code: "123456"}, svc.verify)
+	assert.Contains(t, cookiesOf(w), "__Host-monthra_at", "browsers get the cookies now")
+
+	w = serve(newAuthHandler(svc).VerifyMFA, post("/api/v1/auth/mfa/verify", `{"mfaToken":"m","code":"123456"}`))
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	assert.Equal(t, "access-token", body["accessToken"])
+
+	w = serve(newAuthHandler(svc).VerifyMFA, post("/api/v1/auth/mfa/verify", `{"mfaToken":"m"}`))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+func authenticated(r *http.Request) {
+	*r = *r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{UserID: "u1", SessionID: "s1"}))
+}
+
+func TestMFASettings(t *testing.T) {
+	svc := &fakeAuth{}
+	h := newAuthHandler(svc)
+
+	w := serve(h.SetupMFA, post("/api/v1/auth/mfa/setup", `{"password":"pw"}`, authenticated))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	assert.Equal(t, "pw", svc.password)
+	assert.Equal(t, "u1", svc.principal.UserID)
+	var setup map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&setup))
+	assert.Equal(t, map[string]any{"secret": "JBSWY3DPEHPK3PXP", "otpauthUri": "otpauth://totp/x", "expiresIn": float64(900)}, setup)
+
+	w = serve(h.EnableMFA, post("/api/v1/auth/mfa/enable", `{"code":"123456"}`, authenticated))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	assert.Equal(t, "123456", svc.code)
+	var enabled map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&enabled))
+	assert.Equal(t, map[string]any{"recoveryCodes": []any{"aaaa-bbbb-cccc-dddd"}}, enabled)
+
+	w = serve(h.DisableMFA, post("/api/v1/auth/mfa/disable", `{"password":"pw","code":"123456"}`, authenticated))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, authuc.DisableMFAInput{Password: "pw", Code: "123456"}, svc.disable)
+
+	for path, handle := range map[string]http.HandlerFunc{"setup": h.SetupMFA, "enable": h.EnableMFA, "disable": h.DisableMFA} {
+		w = serve(handle, post("/api/v1/auth/mfa/"+path, `{}`))
+		assert.Equal(t, http.StatusUnauthorized, w.Code, "%s needs a principal", path)
+		w = serve(handle, post("/api/v1/auth/mfa/"+path, `{}`, authenticated))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code, path)
+	}
+
+	svc.err = authuc.ErrMFACodeInvalid
+	for path, handle := range map[string]http.HandlerFunc{"setup": h.SetupMFA, "enable": h.EnableMFA} {
+		w = serve(handle, post("/api/v1/auth/mfa/"+path, `{"password":"pw","code":"1"}`, authenticated))
+		assert.Equal(t, http.StatusBadRequest, w.Code, "%s rejects the field it does not take", path)
+	}
+	w = serve(h.DisableMFA, post("/api/v1/auth/mfa/disable", `{"password":"pw","code":"1"}`, authenticated))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	w = serve(h.EnableMFA, post("/api/v1/auth/mfa/enable", `{"code":"1"}`, authenticated))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	w = serve(h.SetupMFA, post("/api/v1/auth/mfa/setup", `{"password":"pw"}`, authenticated))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestMFAErrorMapping(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err    error
+		status int
+		code   string
+	}{
+		"password incorrect": {authuc.ErrPasswordIncorrect, http.StatusForbidden, "password_incorrect"},
+		"code invalid":       {authuc.ErrMFACodeInvalid, http.StatusForbidden, "mfa_code_invalid"},
+		"challenge invalid":  {authuc.ErrMFAChallengeInvalid, http.StatusUnauthorized, "mfa_challenge_invalid"},
+		"already enabled":    {authuc.ErrMFAAlreadyEnabled, http.StatusConflict, "mfa_already_enabled"},
+		"not enabled":        {authuc.ErrMFANotEnabled, http.StatusConflict, "mfa_not_enabled"},
+		"setup required":     {authuc.ErrMFASetupRequired, http.StatusConflict, "mfa_setup_required"},
+	} {
+		w := serve(newAuthHandler(&fakeAuth{err: tc.err}).DisableMFA, post("/api/v1/auth/mfa/disable", `{"password":"pw","code":"1"}`, authenticated))
+		assert.Equal(t, tc.status, w.Code, name)
+		assert.Equal(t, tc.code, problemOf(t, w).Code, name)
 	}
 }
 

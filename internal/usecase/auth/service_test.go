@@ -53,9 +53,10 @@ func (h *harness) verifiedUser(t *testing.T) domain.User {
 
 func (h *harness) login(t *testing.T) Tokens {
 	t.Helper()
-	tokens, err := h.Login(ctx, LoginInput{Email: "ana@example.com", Password: password}, client)
+	res, err := h.Login(ctx, LoginInput{Email: "ana@example.com", Password: password}, client)
 	require.NoError(t, err)
-	return tokens
+	require.Nil(t, res.Challenge, "no MFA on this account")
+	return res.Tokens
 }
 
 func TestRegisterCreatesAnUnverifiedAccountAndSendsTheLink(t *testing.T) {
@@ -241,8 +242,10 @@ func TestLoginOpensASession(t *testing.T) {
 	h := newHarness()
 	u := h.verifiedUser(t)
 
-	tokens, err := h.Login(ctx, LoginInput{Email: " ANA@example.com", Password: password}, client)
+	res, err := h.Login(ctx, LoginInput{Email: " ANA@example.com", Password: password}, client)
 	require.NoError(t, err)
+	require.Nil(t, res.Challenge)
+	tokens := res.Tokens
 	assert.True(t, strings.HasPrefix(tokens.AccessToken, "at."+u.ID+"."), tokens.AccessToken)
 	assert.Equal(t, h.clock.now().Add(15*time.Minute), tokens.AccessExpiresAt)
 	assert.True(t, core.ValidOpaqueToken(tokens.RefreshToken))

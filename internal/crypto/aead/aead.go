@@ -68,7 +68,8 @@ func AAD(field, owner string) []byte { return []byte(field + "|" + owner) }
 
 // Seal encrypts plaintext under the active key.
 func (s *Sealer) Seal(plaintext, aad []byte) (string, error) {
-	ct := s.byKID[s.active].Seal(nil, nil, plaintext, aad)
+	// NewGCMWithRandomNonce draws the nonce itself and requires a nil one here.
+	ct := s.byKID[s.active].Seal(nil, nil, plaintext, aad) //nolint:gosec // G407: the nonce is random, not hardcoded
 	return s.active + ":" + base64.RawURLEncoding.EncodeToString(ct), nil
 }
 

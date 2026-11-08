@@ -69,6 +69,9 @@ func TestLoadDefaults(t *testing.T) {
 	assert.True(t, cfg.Auth.HIBPEnabled)
 	assert.Equal(t, PublicURL("http://localhost:3000"), cfg.Auth.AppPublicURL)
 	assert.Equal(t, "monthra-server:local", cfg.Issuer())
+	assert.Equal(t, "Monthra (local)", cfg.MFAIssuer())
+	assert.Equal(t, "Monthra", Config{AppEnv: EnvProduction}.MFAIssuer())
+	assert.Equal(t, "Monthra (staging)", Config{AppEnv: EnvStaging}.MFAIssuer())
 
 	assert.Equal(t, 587, cfg.SMTP.Port)
 	assert.Equal(t, SMTPTLSStartTLS, cfg.SMTP.TLS)

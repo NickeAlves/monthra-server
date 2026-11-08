@@ -30,8 +30,20 @@ func (okAuth) ForgotPassword(context.Context, string, authuc.Client) error      
 func (okAuth) ResetPassword(context.Context, authuc.ResetPasswordInput, authuc.Client) error {
 	return nil
 }
-func (okAuth) Login(context.Context, authuc.LoginInput, authuc.Client) (authuc.Tokens, error) {
+func (okAuth) Login(context.Context, authuc.LoginInput, authuc.Client) (authuc.LoginResult, error) {
+	return authuc.LoginResult{}, nil
+}
+func (okAuth) VerifyMFA(context.Context, authuc.VerifyMFAInput, authuc.Client) (authuc.Tokens, error) {
 	return authuc.Tokens{}, nil
+}
+func (okAuth) SetupMFA(context.Context, auth.Principal, string, authuc.Client) (authuc.MFASetup, error) {
+	return authuc.MFASetup{}, nil
+}
+func (okAuth) EnableMFA(context.Context, auth.Principal, string, authuc.Client) ([]string, error) {
+	return nil, nil
+}
+func (okAuth) DisableMFA(context.Context, auth.Principal, authuc.DisableMFAInput, authuc.Client) error {
+	return nil
 }
 func (okAuth) Refresh(context.Context, string, authuc.Client) (authuc.Tokens, error) {
 	return authuc.Tokens{}, nil
@@ -90,6 +102,10 @@ func TestAuthRoutesAreMounted(t *testing.T) {
 		"/api/v1/auth/login":               {`{"email":"b","password":"c"}`, http.StatusOK},
 		"/api/v1/auth/forgot-password":     {`{"email":"b"}`, http.StatusAccepted},
 		"/api/v1/auth/reset-password":      {`{"token":"t","password":"c"}`, http.StatusNoContent},
+		"/api/v1/auth/mfa/verify":          {`{"mfaToken":"m","code":"c"}`, http.StatusOK},
+		"/api/v1/auth/mfa/setup":           {`{"password":"c"}`, http.StatusUnauthorized},
+		"/api/v1/auth/mfa/enable":          {`{"code":"c"}`, http.StatusUnauthorized},
+		"/api/v1/auth/mfa/disable":         {`{"password":"c","code":"c"}`, http.StatusUnauthorized},
 		"/api/v1/auth/refresh":             {`{"refreshToken":"r"}`, http.StatusOK},
 		"/api/v1/auth/logout":              {``, http.StatusUnauthorized},
 	} {

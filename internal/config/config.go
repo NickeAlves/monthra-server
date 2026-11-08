@@ -170,6 +170,15 @@ func (c Captcha) Enabled() bool { return c.TurnstileSecret != "" }
 // staging token is never accepted in production even if keys leaked across.
 func (c Config) Issuer() string { return "monthra-server:" + string(c.AppEnv) }
 
+// MFAIssuer names the account in authenticator apps. Outside production it
+// carries the environment, so test accounts never look like real ones.
+func (c Config) MFAIssuer() string {
+	if c.AppEnv.IsProduction() {
+		return "Monthra"
+	}
+	return "Monthra (" + string(c.AppEnv) + ")"
+}
+
 // Mongo holds the MongoDB connection settings.
 type Mongo struct {
 	URI            string        `env:"MONGO_URI,notEmpty"`

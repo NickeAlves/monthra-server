@@ -13,6 +13,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/cache"
 	"github.com/NickeAlves/monthra-server/internal/captcha"
 	"github.com/NickeAlves/monthra-server/internal/config"
+	"github.com/NickeAlves/monthra-server/internal/crypto/aead"
 	"github.com/NickeAlves/monthra-server/internal/email"
 	"github.com/NickeAlves/monthra-server/internal/http/cookie"
 	"github.com/NickeAlves/monthra-server/internal/http/handler"
@@ -83,6 +84,14 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		verifier = captcha.NewTurnstile(cfg.Captcha.TurnstileSecret.Reveal(), captcha.TurnstileURL, nil)
 	}
 	revocations := cache.NewRevocations(d.redis, d.keys)
+	encryptionKeys := map[string][]byte{}
+	for _, kid := range cfg.Encryption.Keys.KIDs() {
+		encryptionKeys[kid], _ = cfg.Encryption.Keys.Key(kid)
+	}
+	sealer, err := aead.New(encryptionKeys, cfg.Encryption.ActiveKID)
+	if err != nil {
+		return authComponents{}, fmt.Errorf("encryption keys: %w", err)
+	}
 
 	service := authuc.NewService(authuc.Deps{
 		Users:         repomongo.NewUsers(d.db),
@@ -91,6 +100,8 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		AuthTokens:    repomongo.NewAuthTokens(d.db),
 		Revocations:   revocations,
 		Lockout:       cache.NewLockout(d.redis, d.keys, auth.DefaultLockoutPolicy),
+		MFAChallenges: cache.NewMFAChallenges(d.redis, d.keys),
+		Sealer:        sealer,
 		EmailLimit: ratelimit.Bucket{Limiter: d.limiter, Keys: d.keys, Policy: ratelimit.Policy{
 			Name: authuc.PolicyAuthByEmail, Rate: cfg.RateLimits.AuthPerEmail,
 		}},
@@ -109,6 +120,7 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,
 		ResetTokenTTL: cfg.Auth.ResetTokenTTL,
 		AppURL:        cfg.Auth.AppPublicURL,
+		MFAIssuer:     cfg.MFAIssuer(),
 		Lockout:       auth.DefaultLockoutPolicy,
 		RefreshGrace:  refreshGrace(cfg.Auth.RefreshReuseGrace),
 		Logger:        logger,

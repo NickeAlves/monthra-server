@@ -24,7 +24,11 @@ type AuthService interface {
 	ResendVerification(ctx context.Context, email string, c authuc.Client) error
 	ForgotPassword(ctx context.Context, email string, c authuc.Client) error
 	ResetPassword(ctx context.Context, in authuc.ResetPasswordInput, c authuc.Client) error
-	Login(ctx context.Context, in authuc.LoginInput, c authuc.Client) (authuc.Tokens, error)
+	Login(ctx context.Context, in authuc.LoginInput, c authuc.Client) (authuc.LoginResult, error)
+	VerifyMFA(ctx context.Context, in authuc.VerifyMFAInput, c authuc.Client) (authuc.Tokens, error)
+	SetupMFA(ctx context.Context, p auth.Principal, password string, c authuc.Client) (authuc.MFASetup, error)
+	EnableMFA(ctx context.Context, p auth.Principal, code string, c authuc.Client) ([]string, error)
+	DisableMFA(ctx context.Context, p auth.Principal, in authuc.DisableMFAInput, c authuc.Client) error
 	Refresh(ctx context.Context, token string, c authuc.Client) (authuc.Tokens, error)
 	Logout(ctx context.Context, p auth.Principal, c authuc.Client) error
 }
@@ -121,12 +125,98 @@ func (h *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := authuc.LoginInput{Email: req.Email, Password: req.Password, CaptchaToken: req.CaptchaToken}
-	tokens, err := h.Service.Login(r.Context(), in, client(r))
+	res, err := h.Service.Login(r.Context(), in, client(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if ch := res.Challenge; ch != nil {
+		// Not a session yet: the same body for browsers and native clients,
+		// and no cookies until the second factor passes.
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, dto.MFAChallengeResponse{MFARequired: true, MFAToken: ch.Token, ExpiresIn: seconds(ch.ExpiresAt.Sub(h.now()))})
+		return
+	}
+	h.deliver(w, r, res.Tokens)
+}
+
+// VerifyMFA handles POST /auth/mfa/verify, the second step of a login.
+func (h *Auth) VerifyMFA(w http.ResponseWriter, r *http.Request) {
+	var req dto.MFAVerifyRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	tokens, err := h.Service.VerifyMFA(r.Context(), authuc.VerifyMFAInput{Token: req.MFAToken, Code: req.Code}, client(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	h.deliver(w, r, tokens)
+}
+
+// SetupMFA handles POST /auth/mfa/setup (authenticated).
+func (h *Auth) SetupMFA(w http.ResponseWriter, r *http.Request) {
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req dto.MFASetupRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	setup, err := h.Service.SetupMFA(r.Context(), p, req.Password, client(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, dto.MFASetupResponse{Secret: setup.Secret, OTPAuthURI: setup.URI, ExpiresIn: seconds(setup.ExpiresAt.Sub(h.now()))})
+}
+
+// EnableMFA handles POST /auth/mfa/enable (authenticated). The recovery
+// codes in the answer are never shown again.
+func (h *Auth) EnableMFA(w http.ResponseWriter, r *http.Request) {
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req dto.MFAEnableRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	codes, err := h.Service.EnableMFA(r.Context(), p, req.Code, client(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, dto.MFAEnableResponse{RecoveryCodes: codes})
+}
+
+// DisableMFA handles POST /auth/mfa/disable (authenticated).
+func (h *Auth) DisableMFA(w http.ResponseWriter, r *http.Request) {
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req dto.MFADisableRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if err := h.Service.DisableMFA(r.Context(), p, authuc.DisableMFAInput{Password: req.Password, Code: req.Code}, client(r)); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	noContent(w, http.StatusNoContent)
+}
+
+// principal returns the caller set by middleware.Authenticate, or answers 401.
+func principal(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
+	p, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		problem.Write(w, r, http.StatusUnauthorized, i18n.ErrUnauthorized)
+	}
+	return p, ok
 }
 
 // Refresh handles POST /auth/refresh. Browsers send the refresh cookie (its
@@ -156,9 +246,8 @@ func (h *Auth) Refresh(w http.ResponseWriter, r *http.Request) {
 
 // Logout handles POST /auth/logout (authenticated).
 func (h *Auth) Logout(w http.ResponseWriter, r *http.Request) {
-	p, ok := auth.PrincipalFrom(r.Context())
+	p, ok := principal(w, r)
 	if !ok {
-		problem.Write(w, r, http.StatusUnauthorized, i18n.ErrUnauthorized)
 		return
 	}
 	if err := h.Service.Logout(r.Context(), p, client(r)); err != nil {
@@ -235,6 +324,20 @@ func (h *Auth) fail(w http.ResponseWriter, r *http.Request, err error) {
 		problem.Write(w, r, http.StatusBadRequest, i18n.ErrTokenInvalid)
 	case errors.Is(err, authuc.ErrRefreshConflict):
 		problem.Write(w, r, http.StatusConflict, i18n.ErrRefreshConflict)
+	// 403, not 401: the session is fine, only the step-up or the code failed,
+	// and a 401 would make clients refresh or sign out.
+	case errors.Is(err, authuc.ErrPasswordIncorrect):
+		problem.Write(w, r, http.StatusForbidden, i18n.ErrPasswordIncorrect)
+	case errors.Is(err, authuc.ErrMFACodeInvalid):
+		problem.Write(w, r, http.StatusForbidden, i18n.ErrMFACodeInvalid)
+	case errors.Is(err, authuc.ErrMFAChallengeInvalid):
+		problem.Write(w, r, http.StatusUnauthorized, i18n.ErrMFAChallengeInvalid)
+	case errors.Is(err, authuc.ErrMFAAlreadyEnabled):
+		problem.Write(w, r, http.StatusConflict, i18n.ErrMFAAlreadyEnabled)
+	case errors.Is(err, authuc.ErrMFANotEnabled):
+		problem.Write(w, r, http.StatusConflict, i18n.ErrMFANotEnabled)
+	case errors.Is(err, authuc.ErrMFASetupRequired):
+		problem.Write(w, r, http.StatusConflict, i18n.ErrMFASetupRequired)
 	case errors.Is(err, authuc.ErrUnavailable):
 		h.Logger.ErrorContext(r.Context(), "auth dependency unavailable", slog.String("error", err.Error()))
 		problem.Write(w, r, http.StatusServiceUnavailable, i18n.ErrServiceUnavailable)

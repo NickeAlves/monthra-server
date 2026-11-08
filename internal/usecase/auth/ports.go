@@ -1,6 +1,6 @@
 // Package auth implements sign-up, email verification, login, token refresh,
-// logout and password recovery (§6.1, §6.2) on top of ports, so every rule
-// is unit tested without a database.
+// logout, password recovery and TOTP two-step verification (§6.1, §6.2) on
+// top of ports, so every rule is unit tested without a database.
 package auth
 
 import (
@@ -24,6 +24,15 @@ type Users interface {
 	UpdatePasswordHash(ctx context.Context, id, hash string, at time.Time) error
 	// ResetPassword replaces the hash and marks the address verified.
 	ResetPassword(ctx context.Context, id, hash string, at time.Time) error
+
+	// The MFA updates are compare-and-set: false means the account was not
+	// in the expected state (see the MongoDB implementation).
+	SetPendingMFA(ctx context.Context, id, sealed string, expiresAt, at time.Time) (bool, error)
+	EnableMFA(ctx context.Context, id, pendingSealed string, recoveryHashes []string, step int64, at time.Time) (bool, error)
+	UseTOTPStep(ctx context.Context, id string, step int64) (bool, error)
+	UseRecoveryCode(ctx context.Context, id, hash string) (bool, error)
+	ReplaceMFASecret(ctx context.Context, id, oldSealed, newSealed string) (bool, error)
+	DisableMFA(ctx context.Context, id string, at time.Time) (bool, error)
 }
 
 // Sessions persists signed-in devices.
@@ -65,6 +74,21 @@ type Lockout interface {
 	CountRegistration(ctx context.Context, ip string) (int, error)
 }
 
+// MFAChallenges holds the logins waiting for a second factor, by token hash.
+type MFAChallenges interface {
+	Create(ctx context.Context, hash string, c core.MFAChallenge, ttl time.Duration) error
+	// Attempt counts one more code tried and returns the challenge, or false when it is gone.
+	Attempt(ctx context.Context, hash string) (core.MFAChallenge, bool, error)
+	// Consume deletes the challenge and reports whether this call did.
+	Consume(ctx context.Context, hash string) (bool, error)
+}
+
+// Sealer encrypts secrets at rest (AES-256-GCM in production).
+type Sealer interface {
+	Seal(plaintext, aad []byte) (string, error)
+	Open(sealed string, aad []byte) (plaintext []byte, needsRotation bool, err error)
+}
+
 // Limiter is one rate limit policy.
 type Limiter interface {
 	Take(ctx context.Context, subject string) (ratelimit.Result, error)
@@ -98,6 +122,7 @@ type Metrics interface {
 	Login(result string)
 	RefreshReuse()
 	PasswordReset()
+	MFA(event string)
 	RateLimitRejected(policy string)
 }
 
@@ -109,6 +134,8 @@ type Deps struct {
 	AuthTokens    AuthTokens
 	Revocations   Revocations
 	Lockout       Lockout
+	MFAChallenges MFAChallenges
+	Sealer        Sealer
 	// EmailLimit is the per-address budget of the credential endpoints.
 	EmailLimit Limiter
 	// MailLimit caps the account emails (verification, sign-up attempt,
