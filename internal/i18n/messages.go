@@ -12,6 +12,11 @@ const (
 	ErrPayloadTooLarge    Key = "payload_too_large"
 	ErrInternal           Key = "internal_error"
 	ErrServiceUnavailable Key = "service_unavailable"
+
+	ErrRateLimited          Key = "rate_limited"
+	ErrOriginNotAllowed     Key = "origin_not_allowed"
+	ErrCSRFInvalid          Key = "csrf_invalid"
+	ErrAmbiguousCredentials Key = "ambiguous_credentials"
 )
 
 // Message is a translated title and detail.
@@ -52,6 +57,26 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Serviço indisponível", "O serviço está temporariamente indisponível. Tente novamente em instantes."},
 		EsES: {"Servicio no disponible", "El servicio no está disponible temporalmente. Inténtalo de nuevo en unos momentos."},
 		EnUS: {"Service unavailable", "The service is temporarily unavailable. Please try again shortly."},
+	},
+	ErrRateLimited: {
+		PtBR: {"Muitas requisições", "Você fez muitas requisições em pouco tempo. Aguarde e tente novamente."},
+		EsES: {"Demasiadas solicitudes", "Has hecho demasiadas solicitudes en poco tiempo. Espera e inténtalo de nuevo."},
+		EnUS: {"Too many requests", "You made too many requests in a short time. Please wait and try again."},
+	},
+	ErrOriginNotAllowed: {
+		PtBR: {"Origem não permitida", "Esta origem não tem permissão para chamar a API."},
+		EsES: {"Origen no permitido", "Este origen no tiene permiso para llamar a la API."},
+		EnUS: {"Origin not allowed", "This origin is not allowed to call the API."},
+	},
+	ErrCSRFInvalid: {
+		PtBR: {"Token CSRF inválido", "O token CSRF está ausente ou é inválido. Recarregue a página e tente novamente."},
+		EsES: {"Token CSRF no válido", "El token CSRF falta o no es válido. Recarga la página e inténtalo de nuevo."},
+		EnUS: {"Invalid CSRF token", "The CSRF token is missing or invalid. Reload the page and try again."},
+	},
+	ErrAmbiguousCredentials: {
+		PtBR: {"Credenciais ambíguas", "Envie o token pelo cabeçalho Authorization ou por cookie, nunca pelos dois."},
+		EsES: {"Credenciales ambiguas", "Envía el token por el encabezado Authorization o por cookie, nunca por ambos."},
+		EnUS: {"Ambiguous credentials", "Send the token in the Authorization header or in a cookie, never both."},
 	},
 }
 

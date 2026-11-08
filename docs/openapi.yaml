@@ -1,13 +1,33 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
     Errors use problem details (RFC 9457, `application/problem+json`). `title` and `detail`
     are translated (pt-BR, es-ES, en-US) from `Accept-Language`; `code` is stable and
     machine-readable.
+
+    ## Browser clients (CORS and CSRF)
+
+    - Only the origins in `CORS_ALLOWED_ORIGINS` may call the API from a browser, with
+      credentials. The web app and the API must be on the same site, because the auth
+      cookies are `SameSite=Strict`.
+    - Every mutating request (`POST`, `PUT`, `PATCH`, `DELETE`) sent by a browser (it has an
+      `Origin` header or carries auth cookies) must send the token from
+      `GET /api/v1/auth/csrf` in `X-CSRF-Token`, and the CSRF cookie set by that call.
+      Fetch it once at startup and again after a `csrf_invalid` answer.
+    - A request from a foreign `Origin` is rejected with `origin_not_allowed`.
+    - Native clients (mobile) send `Authorization: Bearer` and no cookies, and need no
+      CSRF token. Sending a Bearer token together with an auth cookie is rejected with
+      `ambiguous_credentials`.
+
+    ## Rate limits
+
+    Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
+    `RateLimit-Reset` (seconds). A spent budget answers `429` (`rate_limited`) with
+    `Retry-After` (seconds).
   license:
     name: Proprietary
 servers:
@@ -16,6 +36,8 @@ servers:
 tags:
   - name: health
     description: Liveness and readiness probes
+  - name: auth
+    description: Authentication and browser session protection
 paths:
   /healthz:
     get:
@@ -45,13 +67,82 @@ paths:
                 $ref: "#/components/schemas/Status"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/csrf:
+    get:
+      tags: [auth]
+      summary: CSRF token
+      description: |
+        Sets the readable CSRF cookie (`__Host-monthra_csrf` behind TLS, `monthra_csrf`
+        locally; `SameSite=Strict`, not `HttpOnly`) and returns the same token. A request
+        that already carries a valid token gets that token back, so open tabs keep theirs.
+      operationId: getCsrfToken
+      responses:
+        "200":
+          description: The token to send in `X-CSRF-Token`.
+          headers:
+            RateLimit-Limit:
+              $ref: "#/components/headers/RateLimit-Limit"
+            RateLimit-Remaining:
+              $ref: "#/components/headers/RateLimit-Remaining"
+            RateLimit-Reset:
+              $ref: "#/components/headers/RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CsrfToken"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 components:
   headers:
     X-Request-ID:
       description: Request id, echoed from a well-formed incoming header or generated.
       schema:
         type: string
+    RateLimit-Limit:
+      description: Requests allowed in the budget's window.
+      schema:
+        type: integer
+    RateLimit-Remaining:
+      description: Requests left in the budget.
+      schema:
+        type: integer
+    RateLimit-Reset:
+      description: Seconds until the budget is full again.
+      schema:
+        type: integer
+    Retry-After:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
   responses:
+    Forbidden:
+      description: |
+        Rejected by the CSRF guard: `origin_not_allowed`, `csrf_invalid` or
+        `ambiguous_credentials`.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: The rate limit budget is spent (`rate_limited`).
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/Retry-After"
+        RateLimit-Limit:
+          $ref: "#/components/headers/RateLimit-Limit"
+        RateLimit-Remaining:
+          $ref: "#/components/headers/RateLimit-Remaining"
+        RateLimit-Reset:
+          $ref: "#/components/headers/RateLimit-Reset"
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     ServiceUnavailable:
       description: A dependency is unavailable.
       headers:
@@ -62,6 +153,12 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    CsrfToken:
+      type: object
+      required: [csrfToken]
+      properties:
+        csrfToken:
+          type: string
     Status:
       type: object
       required: [status]
@@ -98,6 +195,10 @@ components:
             - payload_too_large
             - internal_error
             - service_unavailable
+            - rate_limited
+            - origin_not_allowed
+            - csrf_invalid
+            - ambiguous_credentials
         requestId:
           type: string
         errors:

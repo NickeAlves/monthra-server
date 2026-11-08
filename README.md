@@ -2,7 +2,7 @@
 
 The Monthra API: personal finance (expenses, income, investments and Open Finance connections) in **Go**, with **MongoDB** and **Redis**.
 
-> Status: service skeleton (config, structured logs, metrics, tracing, health probes, MongoDB indexes, Docker). Auth and the domain features come next; see the roadmap in [CLAUDE.md](CLAUDE.md) §10.
+> Status: service skeleton (config, structured logs, metrics, tracing, health probes, MongoDB indexes, Docker) and the browser-facing protections (CORS, CSRF, rate limiting, client IP behind proxies). Auth and the domain features come next; see the roadmap in [CLAUDE.md](CLAUDE.md) §10.
 
 ## Stack
 
@@ -14,6 +14,7 @@ Requirements: Docker (with Compose v2) and, to run outside Docker, Go 1.27 (any 
 
 ```bash
 cp .env.example .env     # then replace every change-me value
+make secrets             # prints random values for the secret variables (CSRF_SECRET, ...)
 make up                  # creates the monthra-net network, builds and starts everything
 curl localhost:8080/readyz
 ```
@@ -36,6 +37,7 @@ To run the API on the host instead (Mongo and Redis still in Docker): `make run`
 | Target | What it does |
 |---|---|
 | `make up` / `make down` | Start / stop the local environment |
+| `make secrets` | Print random values for the secret variables of `.env` |
 | `make logs` / `make ps` | Follow logs / service status |
 | `make run` | Run the API on the host |
 | `make test` | Unit tests with the race detector |
@@ -53,7 +55,7 @@ Run `make lint` and `make test` before every commit.
 make staging-up
 ```
 
-This applies `docker-compose.staging.yml` over the base file: the distroless runtime image (non-root, read-only filesystem, `no-new-privileges`), `APP_ENV=staging` (adds HSTS), no hot reload, no Mailpit or mongo-express, and MongoDB/Redis with no host ports. TLS terminates at the proxy in `monthra-infra`. The real staging deploy comes from the `staging` branch through `monthra-infra`.
+This applies `docker-compose.staging.yml` over the base file: the distroless runtime image (non-root, read-only filesystem, `no-new-privileges`), `APP_ENV=staging` (adds HSTS, `Secure` cookies with the `__Host-`/`__Secure-` prefixes and https-only CORS origins, set with `STAGING_CORS_ALLOWED_ORIGINS`), no hot reload, no Mailpit or mongo-express, and MongoDB/Redis with no host ports. TLS terminates at the proxy in `monthra-infra`. The real staging deploy comes from the `staging` branch through `monthra-infra`.
 
 ## Configuration
 
@@ -70,6 +72,10 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 | `MONGO_DATABASE` | `monthra` | |
 | `REDIS_ADDR` | (required) | |
 | `REDIS_PASSWORD` | | Required outside `local` |
+| `CORS_ALLOWED_ORIGINS` | | Web app origins allowed from browsers, comma-separated, exact (no wildcards). Required and https-only outside `local`. List the app origin even when it shares the API origin |
+| `HTTP_TRUSTED_PROXIES` | | Proxies (CIDRs or addresses) whose `X-Forwarded-For` is trusted; empty means the TCP peer is the client |
+| `CSRF_SECRET` | (required) | Base64, at least 32 bytes (`make secrets`) |
+| `RATE_LIMIT_API_IP` | `300/m` | Baseline budget of `/api/v1` per client IP (`<n>/s`, `<n>/m`, `<n>/h`) |
 | `AUDIT_LOG_TTL` | `8760h` | Audit log retention (TTL index) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Empty disables trace export; the standard `OTEL_*` variables apply |
 
@@ -80,10 +86,18 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 - Every response carries `X-Request-ID` and the security headers (CSP, nosniff, frame denial, referrer and permissions policies, COOP/CORP, `Cache-Control: no-store`; HSTS outside `local`).
 - The OpenAPI document is [docs/openapi.yaml](docs/openapi.yaml), served at `/docs` outside production. Keep it in sync with the code.
 
+## Browser security
+
+- **CORS:** only `CORS_ALLOWED_ORIGINS` get CORS headers (with credentials). A preflight from any other origin gets 403.
+- **CSRF** (signed double submit): browsers call `GET /api/v1/auth/csrf` and send the token in `X-CSRF-Token` on every `POST`/`PUT`/`PATCH`/`DELETE`. A request counts as a browser request when it has an `Origin` header or carries auth cookies. Foreign origins are rejected, and so are Bearer tokens sent together with auth cookies. Native clients (Bearer only, no cookies) are exempt.
+- **Same site:** the auth cookies are `SameSite=Strict`, so the web app and the API must share a site (for example `app.example.com` and `api.example.com`).
+- **Rate limits:** GCRA budgets in Redis, shared by every instance. `/api/v1` has a per-IP baseline (IPv6 grouped by /64). Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`, and a spent budget answers 429 with `Retry-After`. The keys are `rate:monthra:{env}:rl:{policy}:{subject}`. The baseline lets requests through when Redis is down; budgets that guard credentials will fail closed.
+- **Client IP:** taken from `X-Forwarded-For` only when the TCP peer is in `HTTP_TRUSTED_PROXIES`. The header is read right to left, skipping the trusted proxies.
+
 ## Observability
 
 - Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and (once auth exists) `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
-- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, plus Go and process metrics.
+- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, plus Go and process metrics.
 - Traces: HTTP server spans named after the route, MongoDB command spans (operation and collection only, never query values) and Redis spans.
 
 ## Layout
@@ -92,7 +106,9 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 cmd/api/              entrypoint (and the `healthcheck` subcommand for the image)
 internal/app/         wiring, servers and graceful shutdown
 internal/config/      environment configuration
-internal/http/        router, servers, handler/, middleware/, problem/
+internal/http/        router, servers, handler/, middleware/, problem/, cookie/
+internal/csrf/        signed CSRF tokens
+internal/ratelimit/   Redis GCRA rate limiter
 internal/i18n/        locale matching and translated messages
 internal/observability/  logger, metrics, tracing
 internal/repository/mongo/  MongoDB client and command tracing

@@ -3,7 +3,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net"
@@ -62,6 +64,7 @@ func TestRunServesAndShutsDown(t *testing.T) {
 	_, redisAddr := testutil.StartRedis(t)
 	t.Setenv("MONGO_URI", testutil.StartMongo(t))
 	t.Setenv("REDIS_ADDR", redisAddr)
+	t.Setenv("CSRF_SECRET", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)))
 	t.Setenv("HTTP_ADDR", freeAddr(t))
 	t.Setenv("METRICS_ADDR", freeAddr(t))
 	cfg, err := config.Load()

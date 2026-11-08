@@ -20,6 +20,10 @@ type Metrics struct {
 	requests *prometheus.CounterVec
 	duration *prometheus.HistogramVec
 	inFlight prometheus.Gauge
+
+	rateLimited     *prometheus.CounterVec
+	rateLimitErrors *prometheus.CounterVec
+	csrfRejected    *prometheus.CounterVec
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -43,6 +47,21 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "http_requests_in_flight",
 			Help:      "HTTP requests currently being served.",
 		}),
+		rateLimited: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "ratelimit_rejected_total",
+			Help:      "Requests rejected with 429, by rate limit policy.",
+		}, []string{"policy"}),
+		rateLimitErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "ratelimit_errors_total",
+			Help:      "Rate limit checks that failed because Redis was unavailable, by policy.",
+		}, []string{"policy"}),
+		csrfRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "csrf_rejected_total",
+			Help:      "Mutating requests rejected by the CSRF guard, by reason.",
+		}, []string{"reason"}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "monthra",
@@ -56,6 +75,7 @@ func NewMetrics(version, env string) *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.requests, m.duration, m.inFlight, buildInfo,
+		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
 	)
 	return m
 }
@@ -77,6 +97,15 @@ func (m *Metrics) ObserveHTTP(method, route string, status int, elapsed time.Dur
 	m.requests.WithLabelValues(method, route, strconv.Itoa(status)).Inc()
 	m.duration.WithLabelValues(method, route).Observe(elapsed.Seconds())
 }
+
+// RateLimitRejected counts one request rejected by policy.
+func (m *Metrics) RateLimitRejected(policy string) { m.rateLimited.WithLabelValues(policy).Inc() }
+
+// RateLimitError counts one rate limit check that could not reach Redis.
+func (m *Metrics) RateLimitError(policy string) { m.rateLimitErrors.WithLabelValues(policy).Inc() }
+
+// CSRFRejected counts one request rejected by the CSRF guard.
+func (m *Metrics) CSRFRejected(reason string) { m.csrfRejected.WithLabelValues(reason).Inc() }
 
 // Handler serves the registry in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {

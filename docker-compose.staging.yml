@@ -11,6 +11,8 @@ services:
     environment:
       APP_ENV: staging
       LOG_LEVEL: info
+      # Staging requires https origins; .env holds the local http ones.
+      CORS_ALLOWED_ORIGINS: ${STAGING_CORS_ALLOWED_ORIGINS:-https://localhost}
     ports: !override
       - "127.0.0.1:8080:8080"
     volumes: !reset []

@@ -15,9 +15,12 @@ import (
 
 	"github.com/NickeAlves/monthra-server/internal/cache"
 	"github.com/NickeAlves/monthra-server/internal/config"
+	"github.com/NickeAlves/monthra-server/internal/csrf"
 	apihttp "github.com/NickeAlves/monthra-server/internal/http"
+	"github.com/NickeAlves/monthra-server/internal/http/cookie"
 	"github.com/NickeAlves/monthra-server/internal/http/handler"
 	"github.com/NickeAlves/monthra-server/internal/observability"
+	"github.com/NickeAlves/monthra-server/internal/ratelimit"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
 	"github.com/NickeAlves/monthra-server/migrations"
 )
@@ -66,6 +69,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	}
 	defer func() { err = errors.Join(err, redisClient.Close()) }()
 
+	csrfSigner, err := csrf.NewSigner(cfg.Security.CSRFSecret)
+	if err != nil {
+		return err
+	}
+
 	metrics := observability.NewMetrics(version, string(cfg.AppEnv))
 	health := handler.NewHealth(logger, readinessTimeout, map[string]handler.Pinger{
 		"mongo": repomongo.Pinger{Client: mongoClient},
@@ -78,6 +86,16 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		MaxBodyBytes: cfg.HTTP.MaxBodyBytes,
 		HSTS:         !cfg.AppEnv.IsLocal(),
 		ServeDocs:    !cfg.AppEnv.IsProduction(),
+
+		AllowedOrigins: cfg.Security.Origins(),
+		TrustedProxies: cfg.Security.Prefixes(),
+		// Outside local, TLS terminates at the monthra-infra proxy.
+		Cookies:    cookie.Policy{Secure: !cfg.AppEnv.IsLocal()},
+		CSRFSigner: csrfSigner,
+
+		Limiter:     ratelimit.NewRedis(redisClient),
+		Keys:        cache.NewKeys(cfg.AppEnv),
+		APIRateByIP: cfg.RateLimits.APIPerIP,
 	})
 
 	api := apihttp.NewServer(cfg.HTTP.Addr, router, cfg.HTTP, logger)

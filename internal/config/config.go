@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -44,9 +45,11 @@ type Config struct {
 	ServiceName string     `env:"SERVICE_NAME" envDefault:"monthra-server"`
 	LogLevel    slog.Level `env:"LOG_LEVEL" envDefault:"info"`
 
-	HTTP  HTTP
-	Mongo Mongo
-	Redis Redis
+	HTTP       HTTP
+	Security   Security
+	RateLimits RateLimits
+	Mongo      Mongo
+	Redis      Redis
 
 	// AuditLogTTL is how long audit log entries are kept before MongoDB expires them.
 	AuditLogTTL time.Duration `env:"AUDIT_LOG_TTL" envDefault:"8760h"`
@@ -66,6 +69,26 @@ type HTTP struct {
 	IdleTimeout       time.Duration `env:"HTTP_IDLE_TIMEOUT" envDefault:"60s"`
 	ShutdownTimeout   time.Duration `env:"HTTP_SHUTDOWN_TIMEOUT" envDefault:"20s"`
 	MaxBodyBytes      int64         `env:"HTTP_MAX_BODY_BYTES" envDefault:"1048576"`
+}
+
+// Security holds the browser-facing protections: CORS, CSRF and proxy trust.
+type Security struct {
+	// AllowedOrigins are the web app origins allowed to call the API from a
+	// browser (CORS with credentials, and the Origin check of the CSRF guard).
+	// Include the app origin even when it is served from the API's own origin:
+	// browsers send Origin on every POST.
+	AllowedOrigins []Origin `env:"CORS_ALLOWED_ORIGINS"`
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For is believed.
+	// Empty means the TCP peer is always the client.
+	TrustedProxies []Prefix `env:"HTTP_TRUSTED_PROXIES"`
+	// CSRFSecret signs the CSRF tokens (base64, at least 32 bytes).
+	CSRFSecret Secret `env:"CSRF_SECRET,notEmpty"`
+}
+
+// RateLimits holds the request budgets enforced in Redis.
+type RateLimits struct {
+	// APIPerIP is the baseline budget of every /api/v1 request, by client IP.
+	APIPerIP Rate `env:"RATE_LIMIT_API_IP" envDefault:"300/m"`
 }
 
 // Mongo holds the MongoDB connection settings.
@@ -124,5 +147,33 @@ func (c Config) Validate() error {
 	if !c.AppEnv.IsLocal() && c.Redis.Password == "" {
 		errs = append(errs, fmt.Errorf("REDIS_PASSWORD is required in %s", c.AppEnv))
 	}
+	errs = append(errs, c.Security.validate(c.AppEnv)...)
 	return errors.Join(errs...)
+}
+
+func (s Security) validate(appEnv Env) []error {
+	var errs []error
+	if len(s.CSRFSecret) < minSecretBytes {
+		errs = append(errs, fmt.Errorf("CSRF_SECRET must decode to at least %d bytes", minSecretBytes))
+	}
+	if !appEnv.IsLocal() {
+		if len(s.AllowedOrigins) == 0 {
+			errs = append(errs, fmt.Errorf("CORS_ALLOWED_ORIGINS is required in %s", appEnv))
+		}
+		for _, o := range s.AllowedOrigins {
+			if !strings.HasPrefix(string(o), "https://") {
+				errs = append(errs, fmt.Errorf("CORS_ALLOWED_ORIGINS must use https in %s: %s", appEnv, o))
+			}
+		}
+	}
+	return errs
+}
+
+// Origins returns the allowed origins as plain strings.
+func (s Security) Origins() []string {
+	out := make([]string, len(s.AllowedOrigins))
+	for i, o := range s.AllowedOrigins {
+		out[i] = string(o)
+	}
+	return out
 }
