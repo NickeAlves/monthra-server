@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -23,6 +23,38 @@ info:
       CSRF token. Sending a Bearer token together with an auth cookie is rejected with
       `ambiguous_credentials`.
 
+    ## Authentication
+
+    - Sign up with `POST /api/v1/auth/register`. The answer is always `202`, whether or not
+      the address is taken. A verification link reaches the inbox:
+      `{APP_PUBLIC_URL}/verify-email#token=…`. The token is in the URL fragment, so it never
+      reaches a server log. The app reads it and calls `POST /api/v1/auth/verify-email`.
+      Links last 30 minutes and work once.
+    - `POST /api/v1/auth/login` needs a verified email. Wrong addresses and wrong passwords
+      get the same `invalid_credentials` answer. After repeated failures the address (or IP)
+      is locked for 1 minute, doubling up to 15 (`429 rate_limited` with `Retry-After`). When
+      a captcha is enabled, `captcha_required` asks for a Cloudflare Turnstile token in
+      `captchaToken`.
+    - Access tokens are EdDSA JWTs valid for 15 minutes. Refresh tokens are opaque, last
+      30 days and **rotate on every use**:
+      - A refresh token presented again within 10 seconds of its rotation answers
+        `409 refresh_conflict`. Retry the original request: another request (tab) already
+        holds the new tokens.
+      - Presented later, it counts as stolen. The whole session is revoked and every token
+        of it stops working (`401`).
+      - Clients must refresh in **single flight**: one refresh at a time, with every waiting
+        request reusing its result.
+    - `POST /api/v1/auth/logout` needs a valid access token. With an expired one, refresh first.
+    - **Browsers** (requests with an `Origin` header) get the tokens only as `HttpOnly`,
+      `SameSite=Strict` cookies, never in the body:
+      - The access token goes in `__Host-monthra_at`, on `Path=/`.
+      - The refresh token goes in `__Secure-monthra_rt`, on `Path=/api/v1/auth/refresh`, so it
+        reaches no other route. `__Host-` requires `Path=/`, hence the `__Secure-` prefix.
+        Locally, without TLS, the cookies have no prefix.
+    - **Native clients** get the tokens in the JSON body. They keep them in secure storage and
+      send `Authorization: Bearer <access token>` and `{"refreshToken": "…"}` to the refresh route.
+    - Request bodies must be `application/json`. Unknown fields are rejected.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
@@ -33,6 +65,8 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local
+# Public by default; authenticated operations declare their own security.
+security: []
 tags:
   - name: health
     description: Liveness and readiness probes
@@ -92,7 +126,175 @@ paths:
                 $ref: "#/components/schemas/CsrfToken"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Sign up
+      description: |
+        Creates an unverified account and emails a verification link. Always `202` for valid
+        input. If the address is taken, its owner gets a "someone tried to sign up" email
+        instead, and the existing account is untouched. The password must have 10 to 1024
+        characters and must not appear in known breaches (`breached`).
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "202":
+          description: Accepted; check the inbox.
+        "403":
+          $ref: "#/components/responses/AuthForbidden"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Confirm an email address
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+      responses:
+        "204":
+          description: The address is confirmed.
+        "400":
+          $ref: "#/components/responses/TokenInvalid"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /api/v1/auth/verify-email/resend:
+    post:
+      tags: [auth]
+      summary: Send a new verification link
+      description: |
+        Always `202` for a well-formed address. Only an unverified account gets a new link,
+        and the earlier links stop working.
+      operationId: resendVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "202":
+          description: Accepted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Sign in with email and password
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Session"
+        "401":
+          description: Wrong email or password (`invalid_credentials`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/AuthForbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate the refresh token
+      description: |
+        Browsers send no body; the `__Secure-monthra_rt` cookie carries the token. Native
+        clients send it in the body. Refresh in single flight (see the API description).
+      operationId: refresh
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: |
+            The token was rotated moments ago by a concurrent request (`refresh_conflict`).
+            Retry the original request with the credentials that request received.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Sign out
+      description: Ends the session, denylists the access token and clears the auth cookies.
+      operationId: logout
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Signed out.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Native clients. Never sent together with the access cookie.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: __Host-monthra_at
+      description: Browsers (`monthra_at` locally). Mutating requests also need `X-CSRF-Token`.
   headers:
     X-Request-ID:
       description: Request id, echoed from a well-formed incoming header or generated.
@@ -115,6 +317,57 @@ components:
       schema:
         type: integer
   responses:
+    Session:
+      description: |
+        Signed in. Browsers get `__Host-monthra_at` and `__Secure-monthra_rt` cookies and only
+        the lifetimes in the body; native clients get the tokens too.
+      headers:
+        Set-Cookie:
+          description: Browsers only. The access and refresh cookies (`HttpOnly`, `SameSite=Strict`).
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Session"
+    Unauthorized:
+      description: Missing, invalid, expired or revoked credentials (`unauthorized`, `ambiguous_credentials`).
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    AuthForbidden:
+      description: |
+        `email_not_verified` (login with the right password on an unconfirmed account),
+        `captcha_required`, `captcha_invalid`, or a CSRF guard rejection.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TokenInvalid:
+      description: The link is unknown, used or expired (`token_invalid`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnsupportedMediaType:
+      description: The body is not `application/json` (`unsupported_media_type`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ValidationFailed:
+      description: |
+        Invalid fields (`validation_failed`), listed in `errors` with codes `required`,
+        `invalid`, `too_short`, `too_long` or `breached`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Forbidden:
       description: |
         Rejected by the CSRF guard: `origin_not_allowed`, `csrf_invalid` or
@@ -153,6 +406,83 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          description: Display name, 1 to 100 characters.
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          minLength: 10
+          maxLength: 1024
+          format: password
+        captchaToken:
+          type: string
+          description: Turnstile token, when `captcha_required` asked for one.
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        captchaToken:
+          type: string
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: The token from the link fragment.
+    EmailRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    RefreshRequest:
+      type: object
+      additionalProperties: false
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    Session:
+      type: object
+      required: [expiresIn, refreshExpiresIn]
+      properties:
+        tokenType:
+          type: string
+          enum: [Bearer]
+          description: Native clients only.
+        accessToken:
+          type: string
+          description: Native clients only.
+        refreshToken:
+          type: string
+          description: Native clients only.
+        expiresIn:
+          type: integer
+          description: Seconds until the access token expires.
+        refreshExpiresIn:
+          type: integer
+          description: Seconds until the refresh token expires.
     CsrfToken:
       type: object
       required: [csrfToken]
@@ -199,6 +529,15 @@ components:
             - origin_not_allowed
             - csrf_invalid
             - ambiguous_credentials
+            - unsupported_media_type
+            - validation_failed
+            - unauthorized
+            - invalid_credentials
+            - email_not_verified
+            - token_invalid
+            - refresh_conflict
+            - captcha_required
+            - captcha_invalid
         requestId:
           type: string
         errors:
