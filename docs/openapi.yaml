@@ -1,13 +1,14 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
     Errors use problem details (RFC 9457, `application/problem+json`). `title` and `detail`
-    are translated (pt-BR, es-ES, en-US) from `Accept-Language`; `code` is stable and
-    machine-readable.
+    are translated (pt-BR, es-ES, en-US) from `Accept-Language` or, on authenticated routes,
+    from the caller's stored locale (`PATCH /api/v1/me/preferences`); `Content-Language` says
+    which. `code` is stable and machine-readable.
 
     ## Browser clients (CORS and CSRF)
 
@@ -76,6 +77,23 @@ info:
       send `Authorization: Bearer <access token>` and `{"refreshToken": "…"}` to the refresh route.
     - Request bodies must be `application/json`. Unknown fields are rejected.
 
+    ## Account (`/api/v1/me`)
+
+    Every route acts on the caller of the access token; none takes a user id.
+    - `GET`/`PATCH /me` read the profile and change the display name. `GET`/`PATCH
+      /me/preferences` read and change the locale, theme and currency; a new locale applies to
+      the next answers on every device and to the account emails.
+    - `POST /me/password` asks for the current password, signs out **every other** session and
+      voids pending reset links. The caller's session stays.
+    - `GET /me/sessions` lists the active sessions (up to 100, the most recently used first).
+      `DELETE /me/sessions/{id}` signs one out (another user's session answers `404`, like an
+      unknown one) and `DELETE /me/sessions` signs out all but the current one.
+    - `DELETE /me` erases the account and its data (LGPD). It takes the password and, with
+      two-step verification on, a code. Every session stops working at once. The security
+      audit trail is kept for its retention period; the address can sign up again.
+    - Wrong passwords and codes here answer `403` (`password_incorrect`, `mfa_code_invalid`) and
+      count toward the lockout of the address.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
@@ -93,6 +111,8 @@ tags:
     description: Liveness and readiness probes
   - name: auth
     description: Authentication and browser session protection
+  - name: me
+    description: The caller's own account, preferences, password and sessions
 paths:
   /healthz:
     get:
@@ -503,6 +523,258 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/me:
+    get:
+      tags: [me]
+      summary: Read the caller's profile
+      operationId: getMe
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The profile (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [me]
+      summary: Change the display name
+      description: Only `name` can change here; any other field is rejected (`bad_request`).
+      operationId: updateMe
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: The updated profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "400":
+          description: Malformed body or unknown field (`bad_request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [me]
+      summary: Delete the account and its data (LGPD)
+      description: |
+        Takes the password and, with two-step verification on, a TOTP or recovery code. Every
+        session is signed out first, then the data of each feature is erased and the account
+        last; a failure leaves the account in place, so the request can be sent again. The
+        security audit trail (without the address) is kept for its retention period, and the
+        owner gets a confirmation email. Browsers get their auth cookies cleared.
+      operationId: deleteMe
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteAccountRequest"
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/me/preferences:
+    get:
+      tags: [me]
+      summary: Read the preferences
+      operationId: getPreferences
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: The preferences.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Preferences"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [me]
+      summary: Change some preferences
+      description: |
+        Absent or `null` fields stay as they are. One unsupported value rejects the whole
+        change (`422`, the field with code `invalid`). A new locale applies to the next answers
+        on every device and to the account emails.
+      operationId: updatePreferences
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreferencesPatch"
+      responses:
+        "200":
+          description: The resulting preferences.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Preferences"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/me/password:
+    post:
+      tags: [me]
+      summary: Change the password
+      description: |
+        Asks for the current password, applies the password policy and the breach check, signs
+        out every other session, voids pending reset links and emails a notice. The caller's
+        session stays.
+      operationId: changePassword
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: Changed.
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/me/sessions:
+    get:
+      tags: [me]
+      summary: List the active sessions
+      description: |
+        Up to 100, the most recently used first. `lastUsedAt` moves on each refresh, so it is
+        accurate to the access token lifetime (15 minutes).
+      operationId: listSessions
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The sessions (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [me]
+      summary: Sign out every other session
+      operationId: revokeOtherSessions
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Every session but the current one is signed out.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/me/sessions/{id}:
+    delete:
+      tags: [me]
+      summary: Sign out one session
+      description: |
+        Signing out the current session clears a browser's auth cookies. Repeating the request
+        for an already signed-out session answers `204` again.
+      operationId: revokeSession
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Signed out.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Not one of the caller's sessions, or expired (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     bearerAuth:
@@ -807,6 +1079,122 @@ components:
         refreshExpiresIn:
           type: integer
           description: Seconds until the refresh token expires.
+    Me:
+      type: object
+      required: [id, name, email, emailVerified, mfa, preferences, createdAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        emailVerified:
+          type: boolean
+        mfa:
+          type: object
+          required: [enabled, recoveryCodesRemaining]
+          properties:
+            enabled:
+              type: boolean
+            recoveryCodesRemaining:
+              type: integer
+              description: Unused recovery codes (0 while two-step verification is off).
+        preferences:
+          $ref: "#/components/schemas/Preferences"
+        createdAt:
+          type: string
+          format: date-time
+    UpdateMeRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    Preferences:
+      type: object
+      required: [locale, theme, currency]
+      properties:
+        locale:
+          type: string
+          enum: [pt-BR, es-ES, en-US]
+        theme:
+          type: string
+          enum: [system, light, dark]
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+    PreferencesPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        locale:
+          type: [string, "null"]
+          enum: [pt-BR, es-ES, en-US, null]
+        theme:
+          type: [string, "null"]
+          enum: [system, light, dark, null]
+        currency:
+          type: [string, "null"]
+          enum: [BRL, USD, EUR, null]
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          format: password
+        newPassword:
+          type: string
+          format: password
+          minLength: 10
+          maxLength: 1024
+    DeleteAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: A TOTP or recovery code; required when two-step verification is on.
+    SessionList:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [id, createdAt, lastUsedAt, expiresAt, userAgent, ip, current]
+            properties:
+              id:
+                type: string
+              createdAt:
+                type: string
+                format: date-time
+              lastUsedAt:
+                type: string
+                format: date-time
+              expiresAt:
+                type: string
+                format: date-time
+              userAgent:
+                type: string
+                description: As sent at sign-in, cut to 256 bytes.
+              ip:
+                type: string
+              current:
+                type: boolean
+                description: The session of this request.
     CsrfToken:
       type: object
       required: [csrfToken]
