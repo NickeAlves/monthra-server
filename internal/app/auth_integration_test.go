@@ -84,6 +84,8 @@ func startApp(t *testing.T) (api string, mail testutil.Mailpit, mongoURI string,
 		"CSRF_SECRET":           base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)),
 		"JWT_SIGNING_KEYS":      "k1:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x24}, 32)),
 		"JWT_ACTIVE_KID":        "k1",
+		"ENCRYPTION_KEYS":       "e1:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x25}, 32)),
+		"ENCRYPTION_ACTIVE_KID": "e1",
 		"HTTP_ADDR":             freeAddr(t),
 		"METRICS_ADDR":          freeAddr(t),
 		"CORS_ALLOWED_ORIGINS":  webOrigin,
@@ -95,6 +97,7 @@ func startApp(t *testing.T) (api string, mail testutil.Mailpit, mongoURI string,
 		"HIBP_ENABLED":          "false", // no third-party calls from CI
 		"RATE_LIMIT_AUTH_IP":    "1000/m",
 		"RATE_LIMIT_AUTH_EMAIL": "1000/m",
+		"RATE_LIMIT_AUTH_MAIL":  "1000/h",
 		"REFRESH_REUSE_GRACE":   "1s",
 	} {
 		t.Setenv(k, v)

@@ -21,6 +21,14 @@ const (
 	// TemplateRegisterAttempt tells the owner of an existing account that
 	// someone tried to register the address again.
 	TemplateRegisterAttempt Template = "register_attempt"
+	// TemplateResetPassword carries the link that sets a new password.
+	TemplateResetPassword Template = "reset_password"
+	// TemplatePasswordChanged tells the owner that the password changed.
+	TemplatePasswordChanged Template = "password_changed"
+	// TemplateMFAEnabled tells the owner that two-step verification was turned on.
+	TemplateMFAEnabled Template = "mfa_enabled"
+	// TemplateMFADisabled tells the owner that two-step verification was turned off.
+	TemplateMFADisabled Template = "mfa_disabled"
 )
 
 // Message is an email to render and send. It never carries user-chosen text:

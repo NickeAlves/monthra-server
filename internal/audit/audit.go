@@ -20,6 +20,14 @@ const (
 	EventLoginFailure         Event = "login_failure"
 	EventLogout               Event = "logout"
 	EventRefreshReuseDetected Event = "refresh_reuse_detected"
+	EventPasswordResetRequest Event = "password_reset_requested"
+	EventPasswordReset        Event = "password_reset"
+	EventReauthFailure        Event = "reauth_failure"
+	EventMFASetup             Event = "mfa_setup"
+	EventMFAEnabled           Event = "mfa_enabled"
+	EventMFADisabled          Event = "mfa_disabled"
+	EventMFAFailure           Event = "mfa_failure"
+	EventMFARecoveryCodeUsed  Event = "mfa_recovery_code_used"
 )
 
 // maxUserAgent bounds the stored user agent.

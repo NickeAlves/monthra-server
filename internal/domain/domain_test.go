@@ -141,3 +141,20 @@ func TestValidation(t *testing.T) {
 	assert.Equal(t, []FieldError{{"email", CodeInvalid}, {"other", CodeInvalid}, {"password", CodeBreached}}, ve.Fields)
 	assert.Equal(t, "invalid input (email: invalid, other: invalid, password: breached)", err.Error())
 }
+
+func TestMFAState(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	later := now.Add(15 * time.Minute)
+	var u User
+	assert.False(t, u.MFAEnabled())
+	assert.False(t, u.MFA.PendingActive(now))
+
+	u.MFA = MFA{PendingSecret: "e1:x", PendingExpiresAt: &later}
+	assert.True(t, u.MFA.PendingActive(now))
+	assert.False(t, u.MFA.PendingActive(later), "expires at PendingExpiresAt")
+	assert.False(t, MFA{PendingSecret: "e1:x"}.PendingActive(now), "no expiry means no setup")
+	assert.False(t, MFA{PendingExpiresAt: &later}.PendingActive(now), "no secret means no setup")
+
+	u.MFA = MFA{Secret: "e1:x", EnabledAt: &now}
+	assert.True(t, u.MFAEnabled())
+}

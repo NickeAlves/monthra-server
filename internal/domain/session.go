@@ -36,7 +36,8 @@ type TokenPurpose string
 
 // Token purposes.
 const (
-	PurposeVerifyEmail TokenPurpose = "verify_email"
+	PurposeVerifyEmail   TokenPurpose = "verify_email"
+	PurposeResetPassword TokenPurpose = "reset_password"
 )
 
 // AuthToken is a single-use, short-lived token sent by email, stored by hash.

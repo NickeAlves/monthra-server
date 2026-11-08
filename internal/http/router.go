@@ -27,7 +27,8 @@ import (
 const (
 	// PolicyAPIByIP is the baseline budget of every /api/v1 request, by client IP.
 	PolicyAPIByIP = "api_ip"
-	// PolicyAuthByIP covers register, login and email verification, by client IP.
+	// PolicyAuthByIP covers the unauthenticated credential endpoints (register,
+	// login and its MFA step, email verification, password recovery), by client IP.
 	PolicyAuthByIP = "auth_ip"
 	// PolicyRefreshByIP covers token refreshes, by client IP.
 	PolicyRefreshByIP = "refresh_ip"
@@ -158,6 +159,9 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 		r.Post("/auth/verify-email", opts.Auth.VerifyEmail)
 		r.Post("/auth/verify-email/resend", opts.Auth.ResendVerification)
 		r.Post("/auth/login", opts.Auth.Login)
+		r.Post("/auth/forgot-password", opts.Auth.ForgotPassword)
+		r.Post("/auth/reset-password", opts.Auth.ResetPassword)
+		r.Post("/auth/mfa/verify", opts.Auth.VerifyMFA)
 	})
 	api.With(limit(PolicyRefreshByIP, opts.RefreshRateByIP, middleware.ByClientIP, false)).
 		Post("/auth/refresh", opts.Auth.Refresh)
@@ -167,6 +171,9 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 			limit(PolicyAPIByUser, opts.APIRateByUser, middleware.ByUser, true),
 		)
 		r.Post("/auth/logout", opts.Auth.Logout)
+		r.Post("/auth/mfa/setup", opts.Auth.SetupMFA)
+		r.Post("/auth/mfa/enable", opts.Auth.EnableMFA)
+		r.Post("/auth/mfa/disable", opts.Auth.DisableMFA)
 	})
 }
 

@@ -27,6 +27,12 @@ const (
 	ErrRefreshConflict      Key = "refresh_conflict"
 	ErrCaptchaRequired      Key = "captcha_required"
 	ErrCaptchaInvalid       Key = "captcha_invalid"
+	ErrPasswordIncorrect    Key = "password_incorrect"
+	ErrMFACodeInvalid       Key = "mfa_code_invalid"
+	ErrMFAChallengeInvalid  Key = "mfa_challenge_invalid"
+	ErrMFAAlreadyEnabled    Key = "mfa_already_enabled"
+	ErrMFANotEnabled        Key = "mfa_not_enabled"
+	ErrMFASetupRequired     Key = "mfa_setup_required"
 )
 
 // Message is a translated title and detail.
@@ -132,6 +138,36 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Verificação inválida", "Não foi possível confirmar a verificação. Tente novamente."},
 		EsES: {"Verificación no válida", "No se pudo confirmar la verificación. Inténtalo de nuevo."},
 		EnUS: {"Invalid verification", "The verification could not be confirmed. Please try again."},
+	},
+	ErrPasswordIncorrect: {
+		PtBR: {"Senha incorreta", "Confirme a sua senha atual para fazer esta alteração."},
+		EsES: {"Contraseña incorrecta", "Confirma tu contraseña actual para hacer este cambio."},
+		EnUS: {"Incorrect password", "Confirm your current password to make this change."},
+	},
+	ErrMFACodeInvalid: {
+		PtBR: {"Código inválido", "O código está incorreto ou já foi usado. Use o código atual do app autenticador ou um código de recuperação."},
+		EsES: {"Código no válido", "El código es incorrecto o ya se usó. Usa el código actual de la app de autenticación o un código de recuperación."},
+		EnUS: {"Invalid code", "The code is wrong or was already used. Use the current code from your authenticator app or a recovery code."},
+	},
+	ErrMFAChallengeInvalid: {
+		PtBR: {"Login expirado", "Esta etapa do login expirou ou teve tentativas demais. Entre novamente com e-mail e senha."},
+		EsES: {"Inicio de sesión caducado", "Este paso del inicio de sesión caducó o tuvo demasiados intentos. Inicia sesión de nuevo con correo y contraseña."},
+		EnUS: {"Sign-in expired", "This sign-in step expired or had too many attempts. Sign in again with your email and password."},
+	},
+	ErrMFAAlreadyEnabled: {
+		PtBR: {"Verificação em duas etapas já ativada", "Desative a verificação atual antes de configurar outra."},
+		EsES: {"Verificación en dos pasos ya activada", "Desactiva la verificación actual antes de configurar otra."},
+		EnUS: {"Two-step verification already on", "Turn off the current verification before setting up another one."},
+	},
+	ErrMFANotEnabled: {
+		PtBR: {"Verificação em duas etapas desativada", "A verificação em duas etapas não está ativada nesta conta."},
+		EsES: {"Verificación en dos pasos desactivada", "La verificación en dos pasos no está activada en esta cuenta."},
+		EnUS: {"Two-step verification is off", "Two-step verification is not turned on for this account."},
+	},
+	ErrMFASetupRequired: {
+		PtBR: {"Configuração expirada", "Comece a configuração da verificação em duas etapas de novo."},
+		EsES: {"Configuración caducada", "Vuelve a empezar la configuración de la verificación en dos pasos."},
+		EnUS: {"Setup expired", "Start the two-step verification setup again."},
 	},
 }
 

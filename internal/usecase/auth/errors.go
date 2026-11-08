@@ -24,6 +24,21 @@ var (
 	ErrCaptchaRequired = errors.New("captcha required")
 	// ErrCaptchaInvalid means the challenge answer was rejected.
 	ErrCaptchaInvalid = errors.New("invalid captcha")
+	// ErrPasswordIncorrect means the password asked again before a sensitive
+	// change (step-up) was wrong.
+	ErrPasswordIncorrect = errors.New("password incorrect")
+	// ErrMFACodeInvalid means the TOTP or recovery code is wrong or was already used.
+	ErrMFACodeInvalid = errors.New("invalid mfa code")
+	// ErrMFAChallengeInvalid means the mfaToken of a login is unknown,
+	// expired or out of attempts: the client signs in again.
+	ErrMFAChallengeInvalid = errors.New("invalid mfa challenge")
+	// ErrMFAAlreadyEnabled refuses a setup while MFA is on.
+	ErrMFAAlreadyEnabled = errors.New("mfa already enabled")
+	// ErrMFANotEnabled refuses a disable while MFA is off.
+	ErrMFANotEnabled = errors.New("mfa not enabled")
+	// ErrMFASetupRequired means there is no pending setup to confirm (none,
+	// expired or replaced).
+	ErrMFASetupRequired = errors.New("mfa setup required")
 	// ErrUnavailable means a store that guards credentials is down; the
 	// request is refused rather than let through (fail closed).
 	ErrUnavailable = errors.New("auth dependency unavailable")

@@ -1,10 +1,12 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/audit"
 	core "github.com/NickeAlves/monthra-server/internal/auth"
 	"github.com/NickeAlves/monthra-server/internal/config"
+	"github.com/NickeAlves/monthra-server/internal/crypto/aead"
 	"github.com/NickeAlves/monthra-server/internal/domain"
 	"github.com/NickeAlves/monthra-server/internal/email"
 	"github.com/NickeAlves/monthra-server/internal/ratelimit"
@@ -77,6 +80,93 @@ func (m *memUsers) ByEmail(_ context.Context, addr string) (domain.User, error) 
 		}
 	}
 	return domain.User{}, domain.ErrNotFound
+}
+
+func (m *memUsers) ByID(_ context.Context, id string) (domain.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return domain.User{}, m.err
+	}
+	u, ok := m.byID[id]
+	if !ok {
+		return domain.User{}, domain.ErrNotFound
+	}
+	return u, nil
+}
+
+func (m *memUsers) ResetPassword(_ context.Context, id, hash string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	u, ok := m.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	u.PasswordHash = hash
+	if u.EmailVerifiedAt == nil {
+		u.EmailVerifiedAt = ptr(at)
+	}
+	m.byID[id] = u
+	return nil
+}
+
+// update applies f to the user id under the lock when cond holds, like the
+// compare-and-set updates of the MongoDB repository.
+func (m *memUsers) update(id string, cond func(domain.User) bool, f func(*domain.User)) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return false, m.err
+	}
+	u, ok := m.byID[id]
+	if !ok {
+		return false, domain.ErrNotFound
+	}
+	if !cond(u) {
+		return false, nil
+	}
+	f(&u)
+	m.byID[id] = u
+	return true, nil
+}
+
+func (m *memUsers) SetPendingMFA(_ context.Context, id, sealed string, expiresAt, _ time.Time) (bool, error) {
+	return m.update(id, func(u domain.User) bool { return !u.MFAEnabled() }, func(u *domain.User) {
+		u.MFA.PendingSecret, u.MFA.PendingExpiresAt = sealed, ptr(expiresAt)
+	})
+}
+
+func (m *memUsers) EnableMFA(_ context.Context, id, pending string, hashes []string, step int64, at time.Time) (bool, error) {
+	return m.update(id, func(u domain.User) bool {
+		return !u.MFAEnabled() && u.MFA.PendingSecret == pending && u.MFA.PendingActive(at)
+	}, func(u *domain.User) {
+		u.MFA = domain.MFA{Secret: pending, EnabledAt: ptr(at), RecoveryCodes: append([]string(nil), hashes...), LastStep: step}
+	})
+}
+
+func (m *memUsers) UseTOTPStep(_ context.Context, id string, step int64) (bool, error) {
+	return m.update(id, func(u domain.User) bool { return u.MFAEnabled() && u.MFA.LastStep < step }, func(u *domain.User) {
+		u.MFA.LastStep = step
+	})
+}
+
+func (m *memUsers) UseRecoveryCode(_ context.Context, id, hash string) (bool, error) {
+	return m.update(id, func(u domain.User) bool { return u.MFAEnabled() && slices.Contains(u.MFA.RecoveryCodes, hash) }, func(u *domain.User) {
+		u.MFA.RecoveryCodes = slices.DeleteFunc(slices.Clone(u.MFA.RecoveryCodes), func(h string) bool { return h == hash })
+	})
+}
+
+func (m *memUsers) ReplaceMFASecret(_ context.Context, id, oldSealed, newSealed string) (bool, error) {
+	return m.update(id, func(u domain.User) bool { return u.MFAEnabled() && u.MFA.Secret == oldSealed }, func(u *domain.User) {
+		u.MFA.Secret = newSealed
+	})
+}
+
+func (m *memUsers) DisableMFA(_ context.Context, id string, _ time.Time) (bool, error) {
+	return m.update(id, func(u domain.User) bool { return u.MFAEnabled() }, func(u *domain.User) { u.MFA = domain.MFA{} })
 }
 
 func (m *memUsers) MarkEmailVerified(_ context.Context, id string, at time.Time) error {
@@ -177,6 +267,35 @@ func (m *memSessions) Revoke(_ context.Context, id string, at time.Time) error {
 	}
 	m.byID[id] = s
 	return nil
+}
+
+func (m *memSessions) RevokeAllForUser(_ context.Context, userID, except string, at time.Time) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	var ids []string
+	for id, s := range m.byID {
+		if s.UserID == userID && id != except && s.Active(at) {
+			s.RevokedAt = ptr(at)
+			m.byID[id] = s
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func (m *memSessions) active(userID string, at time.Time) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, s := range m.byID {
+		if s.UserID == userID && s.Active(at) {
+			n++
+		}
+	}
+	return n
 }
 
 type memRefresh struct {
@@ -311,6 +430,22 @@ func (m *memRevocations) RevokeSession(_ context.Context, sid string, ttl time.D
 	return nil
 }
 
+func (m *memRevocations) RevokeSessions(ctx context.Context, sids []string, ttl time.Duration) error {
+	for _, sid := range sids {
+		if err := m.RevokeSession(ctx, sid, ttl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *memRevocations) sessionRevoked(sid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.sessions[sid]
+	return ok
+}
+
 // memLockout follows the real policy without expiries.
 type memLockout struct {
 	policy        core.LockoutPolicy
@@ -357,6 +492,58 @@ func (m *memLockout) CountRegistration(context.Context, string) (int, error) {
 	}
 	m.registrations++
 	return m.registrations, nil
+}
+
+type memChallenges struct {
+	mu     sync.Mutex
+	byHash map[string]core.MFAChallenge
+	ttls   map[string]time.Duration
+	err    error
+}
+
+func (m *memChallenges) Create(_ context.Context, hash string, c core.MFAChallenge, ttl time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	if m.byHash == nil {
+		m.byHash, m.ttls = map[string]core.MFAChallenge{}, map[string]time.Duration{}
+	}
+	m.byHash[hash], m.ttls[hash] = c, ttl
+	return nil
+}
+
+func (m *memChallenges) Attempt(_ context.Context, hash string) (core.MFAChallenge, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return core.MFAChallenge{}, false, m.err
+	}
+	c, ok := m.byHash[hash]
+	if !ok {
+		return core.MFAChallenge{}, false, nil
+	}
+	c.Attempts++
+	m.byHash[hash] = c
+	return c, true, nil
+}
+
+func (m *memChallenges) Consume(_ context.Context, hash string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return false, m.err
+	}
+	_, ok := m.byHash[hash]
+	delete(m.byHash, hash)
+	return ok, nil
+}
+
+func (m *memChallenges) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.byHash)
 }
 
 type memLimiter struct {
@@ -468,7 +655,16 @@ func (a *auditTrail) events() []audit.Event {
 type counters struct {
 	logins      map[string]int
 	rateLimited map[string]int
+	mfa         map[string]int
 	reuse       int
+	resets      int
+}
+
+func (c *counters) MFA(event string) {
+	if c.mfa == nil {
+		c.mfa = map[string]int{}
+	}
+	c.mfa[event]++
 }
 
 func (c *counters) Login(result string) {
@@ -477,12 +673,33 @@ func (c *counters) Login(result string) {
 	}
 	c.logins[result]++
 }
-func (c *counters) RefreshReuse() { c.reuse++ }
+func (c *counters) RefreshReuse()  { c.reuse++ }
+func (c *counters) PasswordReset() { c.resets++ }
 func (c *counters) RateLimitRejected(policy string) {
 	if c.rateLimited == nil {
 		c.rateLimited = map[string]int{}
 	}
 	c.rateLimited[policy]++
+}
+
+// testKeys are the AES keys of the test sealers, by kid.
+var testKeys = map[string][]byte{"e1": bytes.Repeat([]byte{1}, aead.KeyBytes), "e2": bytes.Repeat([]byte{2}, aead.KeyBytes)}
+
+func mustSealer(t interface{ Fatal(...any) }, keys map[string][]byte, active string) *aead.Sealer {
+	s, err := aead.New(keys, active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// newSealer is a real AES-GCM sealer on testKeys that seals under active.
+func newSealer(active string) *aead.Sealer {
+	s, err := aead.New(testKeys, active)
+	if err != nil {
+		panic(err)
+	}
+	return s
 }
 
 // harness wires a Service to in-memory fakes.
@@ -495,7 +712,9 @@ type harness struct {
 	authTokens  *memAuthTokens
 	revocations *memRevocations
 	lockout     *memLockout
+	challenges  *memChallenges
 	limiter     *memLimiter
+	mailLimiter *memLimiter
 	captcha     *fakeCaptcha
 	breach      *fakeBreach
 	hasher      *fakeHasher
@@ -509,17 +728,17 @@ func newHarness() *harness {
 	c := newClock()
 	h := &harness{
 		clock: c, users: &memUsers{}, sessions: &memSessions{}, refresh: &memRefresh{}, authTokens: &memAuthTokens{},
-		revocations: &memRevocations{}, lockout: &memLockout{policy: core.DefaultLockoutPolicy}, limiter: &memLimiter{},
+		revocations: &memRevocations{}, lockout: &memLockout{policy: core.DefaultLockoutPolicy}, challenges: &memChallenges{}, limiter: &memLimiter{}, mailLimiter: &memLimiter{},
 		captcha: &fakeCaptcha{}, breach: &fakeBreach{}, hasher: &fakeHasher{}, tokens: &fakeTokens{clock: c},
 		mail: &mailbox{}, audit: &auditTrail{}, metrics: &counters{},
 	}
 	h.Service = NewService(Deps{
 		Users: h.users, Sessions: h.sessions, RefreshTokens: h.refresh, AuthTokens: h.authTokens,
-		Revocations: h.revocations, Lockout: h.lockout, EmailLimit: h.limiter, Captcha: h.captcha,
+		Revocations: h.revocations, Lockout: h.lockout, MFAChallenges: h.challenges, Sealer: newSealer("e1"), EmailLimit: h.limiter, MailLimit: h.mailLimiter, Captcha: h.captcha,
 		Breach: h.breach, Hasher: h.hasher, Tokens: h.tokens, Mailer: h.mail, Auditor: h.audit, Metrics: h.metrics,
 	}, Options{
-		RefreshTTL: 30 * 24 * time.Hour, EmailTokenTTL: 30 * time.Minute,
-		AppURL: config.PublicURL("https://app.monthra.example"), Lockout: core.DefaultLockoutPolicy,
+		RefreshTTL: 30 * 24 * time.Hour, EmailTokenTTL: 30 * time.Minute, ResetTokenTTL: 15 * time.Minute,
+		AppURL: config.PublicURL("https://app.monthra.example"), MFAIssuer: "Monthra (test)", Lockout: core.DefaultLockoutPolicy,
 		Logger: slog.New(slog.DiscardHandler), Now: c.now,
 	})
 	return h

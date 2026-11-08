@@ -25,10 +25,12 @@ type Metrics struct {
 	rateLimitErrors *prometheus.CounterVec
 	csrfRejected    *prometheus.CounterVec
 
-	authLogins   *prometheus.CounterVec
-	refreshReuse prometheus.Counter
-	emailSent    *prometheus.CounterVec
-	emailDropped *prometheus.CounterVec
+	authLogins     *prometheus.CounterVec
+	refreshReuse   prometheus.Counter
+	passwordResets prometheus.Counter
+	mfaEvents      *prometheus.CounterVec
+	emailSent      *prometheus.CounterVec
+	emailDropped   *prometheus.CounterVec
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -70,13 +72,23 @@ func NewMetrics(version, env string) *Metrics {
 		authLogins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "monthra",
 			Name:      "auth_logins_total",
-			Help:      "Login attempts, by result (success, failure, locked, unverified, captcha).",
+			Help:      "Login attempts, by result (success, failure, locked, unverified, captcha, mfa_required, mfa_failure).",
 		}, []string{"result"}),
 		refreshReuse: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "monthra",
 			Name:      "auth_refresh_reuse_total",
 			Help:      "Refresh tokens presented again after rotation; each one revoked its session.",
 		}),
+		passwordResets: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "auth_password_resets_total",
+			Help:      "Passwords changed through an emailed reset link.",
+		}),
+		mfaEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "auth_mfa_total",
+			Help:      "Two-step verification changes and recovery code sign-ins, by event (enabled, disabled, recovery_code_used).",
+		}, []string{"event"}),
 		emailSent: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "monthra",
 			Name:      "email_sent_total",
@@ -101,7 +113,7 @@ func NewMetrics(version, env string) *Metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.requests, m.duration, m.inFlight, buildInfo,
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
-		m.authLogins, m.refreshReuse, m.emailSent, m.emailDropped,
+		m.authLogins, m.refreshReuse, m.passwordResets, m.mfaEvents, m.emailSent, m.emailDropped,
 	)
 	return m
 }
@@ -138,6 +150,12 @@ func (m *Metrics) Login(result string) { m.authLogins.WithLabelValues(result).In
 
 // RefreshReuse counts one detected refresh token reuse.
 func (m *Metrics) RefreshReuse() { m.refreshReuse.Inc() }
+
+// PasswordReset counts a password changed through a reset link.
+func (m *Metrics) PasswordReset() { m.passwordResets.Inc() }
+
+// MFA counts a two-step verification event.
+func (m *Metrics) MFA(event string) { m.mfaEvents.WithLabelValues(event).Inc() }
 
 // EmailSent counts one email outcome.
 func (m *Metrics) EmailSent(template, result string) {

@@ -45,6 +45,21 @@ func (r Revocations) RevokeSession(ctx context.Context, sid string, ttl time.Dur
 	return nil
 }
 
+// RevokeSessions rejects every access token of the sessions sids for ttl, in one round trip.
+func (r Revocations) RevokeSessions(ctx context.Context, sids []string, ttl time.Duration) error {
+	if len(sids) == 0 {
+		return nil
+	}
+	pipe := r.client.Pipeline()
+	for _, sid := range sids {
+		pipe.Set(ctx, r.sessionKey(sid), "1", max(ttl, time.Second))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("revoke sessions: %w", err)
+	}
+	return nil
+}
+
 // Revoked reports whether the token jti or its session sid was revoked, in
 // one round trip. Callers must reject the request when it errors (fail closed).
 func (r Revocations) Revoked(ctx context.Context, jti, sid string) (bool, error) {
