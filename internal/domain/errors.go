@@ -12,6 +12,9 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrEmailTaken means another user already has the email address.
 	ErrEmailTaken = errors.New("email already registered")
+	// ErrLimitReached means the user already has as many records of a kind
+	// as one account may hold.
+	ErrLimitReached = errors.New("limit reached")
 )
 
 // Field error codes, stable for clients to switch on.
@@ -21,6 +24,8 @@ const (
 	CodeTooShort = "too_short"
 	CodeTooLong  = "too_long"
 	CodeBreached = "breached"
+	// CodeOutOfRange is a number outside its bounds (an amount, a day).
+	CodeOutOfRange = "out_of_range"
 )
 
 // FieldError is one invalid input field.

@@ -78,7 +78,7 @@ func (s storedLocales) Locale(_ context.Context, userID string) (i18n.Locale, bo
 	return l, ok
 }
 
-func newMeRouter(t *testing.T) http.Handler {
+func newMeRouter(t *testing.T, features ...handler.Routes) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	cookies := cookie.Policy{Secure: true}
@@ -98,6 +98,7 @@ func newMeRouter(t *testing.T) http.Handler {
 		Auth:            &handler.Auth{Service: okAuth{}, Cookies: cookies, Logger: logger},
 		Authenticator:   middleware.AuthOptions{Tokens: goodTokens{}, Revocations: noRevocations{}, Cookies: cookies, Logger: logger},
 		Me:              &handler.Me{Profile: profileStub{}, Account: accountStub{}, Cookies: cookies, Logger: logger},
+		Features:        features,
 		Locales:         storedLocales{"u1": i18n.EnUS},
 		AuthRateByIP:    perMinute,
 		RefreshRateByIP: perMinute,

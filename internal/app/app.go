@@ -91,9 +91,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		err = errors.Join(err, mailer.Close(drainCtx))
 	}()
 
+	db := mongoClient.Database(cfg.Mongo.Database)
+	domainFeatures := newFeatures(db, logger)
 	authn, err := newAuth(cfg, logger, metrics, authDeps{
-		db: mongoClient.Database(cfg.Mongo.Database), redis: redisClient, keys: keys,
+		db: db, redis: redisClient, keys: keys,
 		limiter: limiter, mailer: mailer, cookies: cookies,
+		featureErasers: domainFeatures.erasers,
 	})
 	if err != nil {
 		return err
@@ -123,6 +126,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		Auth:            authn.handler,
 		Authenticator:   authn.authenticator,
 		Me:              authn.me,
+		Features:        domainFeatures.routes,
 		Locales:         authn.locales,
 		AuthRateByIP:    cfg.RateLimits.AuthPerIP,
 		RefreshRateByIP: cfg.RateLimits.RefreshPerIP,

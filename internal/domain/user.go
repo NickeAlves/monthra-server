@@ -226,6 +226,13 @@ func ValidatePassword(password string) error {
 
 // NormalizeName trims a display name and checks it is 1 to 100 printable characters.
 func NormalizeName(raw string) (string, error) {
+	return normalizeText(raw, MaxNameLength)
+}
+
+// normalizeText trims a short user-chosen label (a name of a person, an
+// account, a category) and checks it is 1 to maxRunes printable characters:
+// valid UTF-8 with no control or format characters (no bidi overrides).
+func normalizeText(raw string, maxRunes int) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return "", &fieldErr{CodeRequired}
@@ -233,7 +240,7 @@ func NormalizeName(raw string) (string, error) {
 	if !utf8.ValidString(s) {
 		return "", &fieldErr{CodeInvalid}
 	}
-	if utf8.RuneCountInString(s) > MaxNameLength {
+	if utf8.RuneCountInString(s) > maxRunes {
 		return "", &fieldErr{CodeTooLong}
 	}
 	for _, r := range s {
