@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -48,6 +49,9 @@ type Config struct {
 	HTTP       HTTP
 	Security   Security
 	RateLimits RateLimits
+	Auth       Auth
+	SMTP       SMTP
+	Captcha    Captcha
 	Mongo      Mongo
 	Redis      Redis
 
@@ -89,7 +93,65 @@ type Security struct {
 type RateLimits struct {
 	// APIPerIP is the baseline budget of every /api/v1 request, by client IP.
 	APIPerIP Rate `env:"RATE_LIMIT_API_IP" envDefault:"300/m"`
+	// APIPerUser is the budget of authenticated requests, by user.
+	APIPerUser Rate `env:"RATE_LIMIT_API_USER" envDefault:"100/m"`
+	// AuthPerIP covers the credential endpoints (register, login, email
+	// verification) together, by client IP.
+	AuthPerIP Rate `env:"RATE_LIMIT_AUTH_IP" envDefault:"5/m"`
+	// AuthPerEmail covers the same endpoints by target email address.
+	AuthPerEmail Rate `env:"RATE_LIMIT_AUTH_EMAIL" envDefault:"5/m"`
+	// RefreshPerIP is the budget of token refreshes, by client IP.
+	RefreshPerIP Rate `env:"RATE_LIMIT_REFRESH_IP" envDefault:"30/m"`
 }
+
+// Auth holds the token, password and verification settings (§6.1, §6.2).
+type Auth struct {
+	// SigningKeys are the Ed25519 seeds (32 bytes each) that sign access tokens.
+	SigningKeys KeyRing `env:"JWT_SIGNING_KEYS,notEmpty"`
+	// ActiveKID picks the key that signs new tokens; the others only verify.
+	ActiveKID       string        `env:"JWT_ACTIVE_KID,notEmpty"`
+	AccessTokenTTL  time.Duration `env:"ACCESS_TOKEN_TTL" envDefault:"15m"`
+	RefreshTokenTTL time.Duration `env:"REFRESH_TOKEN_TTL" envDefault:"720h"`
+	// RefreshReuseGrace is how long a just-rotated refresh token answers 409
+	// (another tab refreshed first) instead of revoking the session as reuse.
+	RefreshReuseGrace time.Duration `env:"REFRESH_REUSE_GRACE" envDefault:"10s"`
+	// EmailTokenTTL is the lifetime of email verification links.
+	EmailTokenTTL time.Duration `env:"EMAIL_TOKEN_TTL" envDefault:"30m"`
+	// PasswordHashConcurrency bounds parallel Argon2id runs (64 MiB each).
+	PasswordHashConcurrency int `env:"PASSWORD_HASH_CONCURRENCY" envDefault:"4"`
+	// HIBPEnabled checks new passwords against Have I Been Pwned (k-anonymity).
+	HIBPEnabled bool `env:"HIBP_ENABLED" envDefault:"true"`
+	// AppPublicURL is the web app base URL used in email links.
+	AppPublicURL PublicURL `env:"APP_PUBLIC_URL" envDefault:"http://localhost:3000"`
+}
+
+// SMTP holds the transactional email relay settings.
+type SMTP struct {
+	Host     string   `env:"SMTP_HOST,notEmpty"`
+	Port     int      `env:"SMTP_PORT" envDefault:"587"`
+	Username string   `env:"SMTP_USERNAME"`
+	Password Redacted `env:"SMTP_PASSWORD"`
+	// From is the sender, "Monthra <no-reply@example.com>" or a bare address.
+	From    string        `env:"SMTP_FROM,notEmpty"`
+	TLS     SMTPTLS       `env:"SMTP_TLS" envDefault:"starttls"`
+	Timeout time.Duration `env:"SMTP_TIMEOUT" envDefault:"10s"`
+	// AllowInsecure permits SMTP_TLS=none in staging, for the local
+	// homologation stack that sends to Mailpit. Never set it on a deployment.
+	AllowInsecure bool `env:"SMTP_ALLOW_INSECURE"`
+}
+
+// Captcha holds the Cloudflare Turnstile settings. An empty secret disables
+// the challenge.
+type Captcha struct {
+	TurnstileSecret Redacted `env:"TURNSTILE_SECRET"`
+}
+
+// Enabled reports whether a captcha is verified after repeated failures.
+func (c Captcha) Enabled() bool { return c.TurnstileSecret != "" }
+
+// Issuer is the iss claim of access tokens. It differs per environment, so a
+// staging token is never accepted in production even if keys leaked across.
+func (c Config) Issuer() string { return "monthra-server:" + string(c.AppEnv) }
 
 // Mongo holds the MongoDB connection settings.
 type Mongo struct {
@@ -129,6 +191,7 @@ func (c Config) Validate() error {
 		"HTTP_SHUTDOWN_TIMEOUT":    c.HTTP.ShutdownTimeout,
 		"MONGO_CONNECT_TIMEOUT":    c.Mongo.ConnectTimeout,
 		"AUDIT_LOG_TTL":            c.AuditLogTTL,
+		"SMTP_TIMEOUT":             c.SMTP.Timeout,
 	}
 	for name, d := range positive {
 		if d <= 0 {
@@ -148,7 +211,80 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("REDIS_PASSWORD is required in %s", c.AppEnv))
 	}
 	errs = append(errs, c.Security.validate(c.AppEnv)...)
+	errs = append(errs, c.Auth.validate(c.AppEnv)...)
+	errs = append(errs, c.SMTP.validate(c.AppEnv)...)
 	return errors.Join(errs...)
+}
+
+// Bounds of the auth settings.
+const (
+	ed25519SeedBytes   = 32
+	minAccessTokenTTL  = time.Minute
+	maxAccessTokenTTL  = 15 * time.Minute
+	minRefreshTokenTTL = time.Hour
+	maxRefreshTokenTTL = 90 * 24 * time.Hour
+	minEmailTokenTTL   = 5 * time.Minute
+	maxEmailTokenTTL   = time.Hour
+	maxHashConcurrency = 64
+	maxRefreshGrace    = time.Minute
+)
+
+func (a Auth) validate(appEnv Env) []error {
+	var errs []error
+	if _, ok := a.SigningKeys.Key(a.ActiveKID); !ok {
+		errs = append(errs, fmt.Errorf("JWT_ACTIVE_KID %q is not in JWT_SIGNING_KEYS", a.ActiveKID))
+	}
+	for _, kid := range a.SigningKeys.KIDs() {
+		if key, _ := a.SigningKeys.Key(kid); len(key) != ed25519SeedBytes {
+			errs = append(errs, fmt.Errorf("JWT_SIGNING_KEYS key %q must decode to %d bytes (an Ed25519 seed)", kid, ed25519SeedBytes))
+		}
+	}
+	if a.AccessTokenTTL < minAccessTokenTTL || a.AccessTokenTTL > maxAccessTokenTTL {
+		errs = append(errs, fmt.Errorf("ACCESS_TOKEN_TTL must be between %s and %s", minAccessTokenTTL, maxAccessTokenTTL))
+	}
+	if a.RefreshTokenTTL < minRefreshTokenTTL || a.RefreshTokenTTL > maxRefreshTokenTTL {
+		errs = append(errs, fmt.Errorf("REFRESH_TOKEN_TTL must be between %s and %s", minRefreshTokenTTL, maxRefreshTokenTTL))
+	}
+	if a.RefreshReuseGrace < 0 || a.RefreshReuseGrace > maxRefreshGrace {
+		errs = append(errs, fmt.Errorf("REFRESH_REUSE_GRACE must be between 0s and %s", maxRefreshGrace))
+	}
+	if a.EmailTokenTTL < minEmailTokenTTL || a.EmailTokenTTL > maxEmailTokenTTL {
+		errs = append(errs, fmt.Errorf("EMAIL_TOKEN_TTL must be between %s and %s", minEmailTokenTTL, maxEmailTokenTTL))
+	}
+	if a.PasswordHashConcurrency < 1 || a.PasswordHashConcurrency > maxHashConcurrency {
+		errs = append(errs, fmt.Errorf("PASSWORD_HASH_CONCURRENCY must be between 1 and %d", maxHashConcurrency))
+	}
+	if !appEnv.IsLocal() && !strings.HasPrefix(string(a.AppPublicURL), "https://") {
+		errs = append(errs, fmt.Errorf("APP_PUBLIC_URL must use https in %s", appEnv))
+	}
+	return errs
+}
+
+func (s SMTP) validate(appEnv Env) []error {
+	var errs []error
+	if s.Port < 1 || s.Port > 65535 {
+		errs = append(errs, errors.New("SMTP_PORT must be between 1 and 65535"))
+	}
+	if addr, err := mail.ParseAddress(s.From); err != nil || addr.Address == "" {
+		errs = append(errs, fmt.Errorf("SMTP_FROM is not a valid address: %q", s.From))
+	}
+	if s.TLS == SMTPTLSNone {
+		switch {
+		case s.Username != "":
+			errs = append(errs, errors.New("SMTP_USERNAME requires SMTP_TLS=starttls or tls: credentials never travel in clear text"))
+		case appEnv.IsProduction():
+			errs = append(errs, errors.New("SMTP_TLS=none is not allowed in production"))
+		case appEnv == EnvStaging && !s.AllowInsecure:
+			errs = append(errs, errors.New("SMTP_TLS=none in staging requires SMTP_ALLOW_INSECURE=true (local homologation with Mailpit only)"))
+		}
+	}
+	if s.AllowInsecure && appEnv.IsProduction() {
+		errs = append(errs, errors.New("SMTP_ALLOW_INSECURE must not be set in production"))
+	}
+	if s.Username != "" && s.Password == "" {
+		errs = append(errs, errors.New("SMTP_PASSWORD is required when SMTP_USERNAME is set"))
+	}
+	return errs
 }
 
 func (s Security) validate(appEnv Env) []error {
