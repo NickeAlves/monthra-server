@@ -102,14 +102,19 @@ func (m *memStore) Installments(_ context.Context, userID, groupID string, from 
 	return out, nil
 }
 
+// UpdateMany stores ts; with updateErr set, it stores the first one only
+// and fails, as a write interrupted midway.
 func (m *memStore) UpdateMany(ctx context.Context, ts []domain.Transaction) error {
 	m.bulkUpdates++
 	for _, t := range ts {
 		if _, err := m.ByID(ctx, t.UserID, t.ID); err == nil {
 			m.txs[t.ID] = t
 		}
+		if m.updateErr != nil {
+			return m.updateErr
+		}
 	}
-	return m.updateErr
+	return nil
 }
 
 func (m *memStore) DeleteInstallments(ctx context.Context, userID, groupID string, from int) error {

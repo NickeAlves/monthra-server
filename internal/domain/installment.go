@@ -75,11 +75,21 @@ func NewTransactions(userID string, in TransactionInput, refs TransactionRefs, n
 	return out, nil
 }
 
+// SeriesEdit is what an edit of one transaction of a series changes: the
+// addressed transaction after the edit (Next, and whether it changed) and
+// the other transactions of its series that changed. Callers store Others
+// first and Next last: until Next is stored, sending the same edit again
+// takes the same changes from it and completes what a failure left out.
+type SeriesEdit struct {
+	Next    Transaction
+	Changed bool
+	Others  []Transaction
+}
+
 // ApplyInScope applies the patch to current (as Apply does) and, when
 // current is an installment and scope reaches further, to others: the
 // other installments of its purchase within scope, as the caller found
-// them. It returns current after the patch and every transaction that
-// changed, current first when it did.
+// them.
 //
 // The other installments take the changes the patch made to current, so a
 // client that sends its whole form changes nothing it left as it was:
@@ -92,21 +102,18 @@ func NewTransactions(userID string, in TransactionInput, refs TransactionRefs, n
 //
 // A purchase stays on one account: moving an installment to another
 // account takes ScopeAll, and answers scope: invalid otherwise.
-func (p TransactionPatch) ApplyInScope(current Transaction, scope EditScope, others []Transaction, refs TransactionRefs, now time.Time) (Transaction, []Transaction, error) {
+func (p TransactionPatch) ApplyInScope(current Transaction, scope EditScope, others []Transaction, refs TransactionRefs, now time.Time) (SeriesEdit, error) {
 	inGroup := current.Installment != nil
 	if inGroup && scope != ScopeAll && movesAccount(p.AccountID, current.AccountID) {
-		return Transaction{}, nil, &ValidationError{Fields: []FieldError{{Field: "scope", Code: CodeInvalid}}}
+		return SeriesEdit{}, &ValidationError{Fields: []FieldError{{Field: "scope", Code: CodeInvalid}}}
 	}
 	next, changed, err := p.Apply(current, refs, now)
 	if err != nil {
-		return Transaction{}, nil, err
+		return SeriesEdit{}, err
 	}
-	var out []Transaction
-	if changed {
-		out = append(out, next)
-	}
+	edit := SeriesEdit{Next: next, Changed: changed}
 	if !inGroup || scope == ScopeThis {
-		return next, out, nil
+		return edit, nil
 	}
 
 	redated := !next.Date.Equal(current.Date)
@@ -150,13 +157,13 @@ func (p TransactionPatch) ApplyInScope(current Transaction, scope EditScope, oth
 		}
 		if !n.equal(o) {
 			n.UpdatedAt = now.UTC()
-			out = append(out, n)
+			edit.Others = append(edit.Others, n)
 		}
 	}
 	if err := v.Err(); err != nil {
-		return Transaction{}, nil, err
+		return SeriesEdit{}, err
 	}
-	return next, out, nil
+	return edit, nil
 }
 
 // movesAccount reports whether a patch names an account other than the

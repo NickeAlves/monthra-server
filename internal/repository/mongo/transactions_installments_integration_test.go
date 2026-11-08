@@ -79,11 +79,11 @@ func TestTransactionsInstallmentGroups(t *testing.T) {
 
 	// Moving the whole purchase off the card removes its invoices.
 	toBank := l.bank.ID
-	_, changed, err := domain.TransactionPatch{AccountID: &toBank}.ApplyInScope(sofa[1], domain.ScopeAll,
+	edit, err := domain.TransactionPatch{AccountID: &toBank}.ApplyInScope(sofa[1], domain.ScopeAll,
 		[]domain.Transaction{sofa[0], sofa[2]}, domain.TransactionRefs{Account: l.bank}, now)
 	require.NoError(t, err)
-	require.Len(t, changed, 3)
-	require.NoError(t, store.UpdateMany(ctx, changed))
+	require.Len(t, edit.Others, 2)
+	require.NoError(t, store.UpdateMany(ctx, append(edit.Others, edit.Next)))
 	require.NoError(t, store.UpdateMany(ctx, nil))
 	for _, inst := range sofa {
 		var doc bson.M

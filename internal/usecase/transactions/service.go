@@ -183,24 +183,24 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 			return domain.Transaction{}, fmt.Errorf("find installments: %w", err)
 		}
 	}
-	next, changed, err := p.ApplyInScope(current, scope, others, refs, s.clock())
+	edit, err := p.ApplyInScope(current, scope, others, refs, s.clock())
 	if err != nil {
 		return domain.Transaction{}, err
 	}
-	switch len(changed) {
-	case 0:
-		return current, nil
-	case 1:
-		err = s.store.Update(ctx, changed[0])
-	default:
-		// Independent writes: sending the same patch again completes them,
-		// since the others follow from this installment.
-		err = s.store.UpdateMany(ctx, changed)
+	// The others first and this one last: until this one is stored, sending
+	// the same patch again finds the same changes on it and completes them.
+	if len(edit.Others) > 0 {
+		if err := s.store.UpdateMany(ctx, edit.Others); err != nil {
+			return domain.Transaction{}, fmt.Errorf("update installments: %w", err)
+		}
 	}
-	if err != nil {
+	if !edit.Changed {
+		return current, nil
+	}
+	if err := s.store.Update(ctx, edit.Next); err != nil {
 		return domain.Transaction{}, fmt.Errorf("update transaction: %w", err)
 	}
-	return next, nil
+	return edit.Next, nil
 }
 
 // Delete removes one of the caller's transactions or, on an installment,

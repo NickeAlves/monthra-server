@@ -73,7 +73,8 @@ func TestUpdateInScope(t *testing.T) {
 	now, err := f.store.Installments(ctx, "u1", "g1", 1)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Sofa", "Couch", "Couch", "Couch"}, descriptions(now), "the earlier installments stay")
-	assert.Equal(t, 1, f.store.bulkUpdates, "one write")
+	assert.Equal(t, 1, f.store.bulkUpdates, "the others in one write")
+	assert.Equal(t, 1, f.store.updates, "then the addressed one")
 
 	_, err = f.svc.Update(ctx, "u1", list[2].ID, domain.TransactionPatch{Description: ptr("Sofa")}, domain.ScopeAll)
 	require.NoError(t, err)
@@ -81,12 +82,14 @@ func TestUpdateInScope(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Sofa", "Sofa", "Sofa", "Sofa"}, descriptions(now))
 
+	updates, bulk := f.store.updates, f.store.bulkUpdates
 	_, err = f.svc.Update(ctx, "u1", list[0].ID, domain.TransactionPatch{Description: ptr("Chair")}, domain.ScopeThis)
 	require.NoError(t, err)
 	now, err = f.store.Installments(ctx, "u1", "g1", 1)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Chair", "Sofa", "Sofa", "Sofa"}, descriptions(now))
-	assert.Equal(t, 1, f.store.updates, "a single write")
+	assert.Equal(t, updates+1, f.store.updates, "a single write")
+	assert.Equal(t, bulk, f.store.bulkUpdates)
 
 	_, err = f.svc.Update(ctx, "u1", list[1].ID, domain.TransactionPatch{AccountID: ptr("wallet")}, domain.ScopeFuture)
 	assert.Equal(t, map[string]string{"scope": domain.CodeInvalid}, fields(t, err), "a purchase stays on one account")
@@ -107,10 +110,20 @@ func TestUpdateInScope(t *testing.T) {
 	_, err = f.svc.Update(ctx, "u2", list[1].ID, domain.TransactionPatch{Description: ptr("x")}, domain.ScopeAll)
 	assert.ErrorIs(t, err, domain.ErrNotFound)
 
+	// A write interrupted midway leaves the addressed one as it was, so
+	// sending the same patch again completes it.
 	f.store.updateErr = errors.New("boom")
 	_, err = f.svc.Update(ctx, "u1", list[1].ID, domain.TransactionPatch{Description: ptr("x")}, domain.ScopeAll)
-	assert.ErrorContains(t, err, "update transaction")
+	assert.ErrorContains(t, err, "update installments")
+	now, err = f.store.Installments(ctx, "u1", "g1", 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"x", "Sofa", "Sofa", "Sofa"}, descriptions(now), "the first of the others only")
 	f.store.updateErr = nil
+	_, err = f.svc.Update(ctx, "u1", list[1].ID, domain.TransactionPatch{Description: ptr("x")}, domain.ScopeAll)
+	require.NoError(t, err)
+	now, err = f.store.Installments(ctx, "u1", "g1", 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"x", "x", "x", "x"}, descriptions(now), "completed by the same patch")
 
 	f.store.err = errors.New("down")
 	_, err = f.svc.Update(ctx, "u1", list[1].ID, domain.TransactionPatch{Description: ptr("x")}, domain.ScopeAll)
