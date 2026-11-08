@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -45,6 +45,27 @@ info:
       - Clients must refresh in **single flight**: one refresh at a time, with every waiting
         request reusing its result.
     - `POST /api/v1/auth/logout` needs a valid access token. With an expired one, refresh first.
+    - **Password recovery:** `POST /api/v1/auth/forgot-password` always answers `202`, and an
+      address with an account gets a link to `{APP_PUBLIC_URL}/reset-password#token=…` (15
+      minutes, single use; a new request voids the earlier links). `POST
+      /api/v1/auth/reset-password` sets the new password, confirms the address and **signs out
+      every session**. Two-step verification stays on.
+    - One address receives at most 5 account emails (verification, sign-up attempt, reset) per
+      hour; more answers `429` before the address is even looked up.
+    - **Two-step verification (TOTP):**
+      - Turn it on with `POST /api/v1/auth/mfa/setup` (asks for the password again; returns the
+        secret and an `otpauth://` URI for a QR code, valid 15 minutes), then
+        `POST /api/v1/auth/mfa/enable` with a code from the authenticator app. The answer holds
+        10 recovery codes, **shown only once**.
+      - With it on, a correct password answers `200 {"mfaRequired": true, "mfaToken": "…",
+        "expiresIn": 300}` and no session. Send `POST /api/v1/auth/mfa/verify` with the
+        `mfaToken` and a 6-digit code or a recovery code to get the session (cookies or tokens,
+        as for a login). A `mfaToken` takes 5 codes; then sign in again (`mfa_challenge_invalid`).
+      - Each code works once: wait for the next one rather than reusing it. Wrong codes count
+        toward the lockout of the address, like wrong passwords.
+      - `POST /api/v1/auth/mfa/disable` takes the password and a code.
+      - A wrong password or code on these routes answers `403` (`password_incorrect`,
+        `mfa_code_invalid`), never `401`: the session is still valid.
     - **Browsers** (requests with an `Origin` header) get the tokens only as `HttpOnly`,
       `SameSite=Strict` cookies, never in the body:
       - The access token goes in `__Host-monthra_at`, on `Path=/`.
@@ -206,6 +227,9 @@ paths:
     post:
       tags: [auth]
       summary: Sign in with email and password
+      description: |
+        Opens a session, or, when two-step verification is on, answers an `MFAChallenge`
+        (no cookies, no tokens) to complete with `POST /api/v1/auth/mfa/verify`.
       operationId: login
       requestBody:
         required: true
@@ -215,7 +239,20 @@ paths:
               $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          $ref: "#/components/responses/Session"
+          description: |
+            Signed in (`Session`, with cookies for browsers), or the second factor is required
+            (`MFAChallenge`).
+          headers:
+            Set-Cookie:
+              description: Browsers only, and only with a `Session`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Session"
+                  - $ref: "#/components/schemas/MFAChallenge"
         "401":
           description: Wrong email or password (`invalid_credentials`).
           content:
@@ -224,6 +261,189 @@ paths:
                 $ref: "#/components/schemas/Problem"
         "403":
           $ref: "#/components/responses/AuthForbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [auth]
+      summary: Ask for a password reset link
+      description: |
+        Always `202` for a well-formed address. An address with an account (verified or not)
+        gets a single-use link valid for 15 minutes; the earlier links stop working.
+      operationId: forgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "202":
+          description: Accepted; check the inbox.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/reset-password:
+    post:
+      tags: [auth]
+      summary: Set a new password with a reset link
+      description: |
+        Sets the password, confirms the address, revokes every session (browsers also get
+        their auth cookies cleared) and emails a notice. A password refused by the policy
+        (`422`) leaves the link usable.
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "204":
+          description: The password changed; sign in again.
+        "400":
+          $ref: "#/components/responses/TokenInvalid"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/mfa/verify:
+    post:
+      tags: [auth]
+      summary: Complete a login with a TOTP or recovery code
+      operationId: verifyMfa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFAVerifyRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Session"
+        "401":
+          description: |
+            The `mfaToken` is unknown, expired, used or out of attempts
+            (`mfa_challenge_invalid`): sign in again.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/mfa/setup:
+    post:
+      tags: [auth]
+      summary: Start turning two-step verification on
+      description: |
+        Asks for the password again and returns a new TOTP secret (SHA-1, 6 digits, 30
+        seconds) for the authenticator app. Nothing changes until `/auth/mfa/enable` confirms
+        it, within 15 minutes. A new setup replaces an unfinished one.
+      operationId: setupMfa
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFASetupRequest"
+      responses:
+        "200":
+          description: The secret, never stored in clear text.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MFASetup"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "409":
+          $ref: "#/components/responses/MFAConflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/mfa/enable:
+    post:
+      tags: [auth]
+      summary: Confirm the setup and turn two-step verification on
+      operationId: enableMfa
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFAEnableRequest"
+      responses:
+        "200":
+          description: On. The recovery codes are shown only this once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodes"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "409":
+          $ref: "#/components/responses/MFAConflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/mfa/disable:
+    post:
+      tags: [auth]
+      summary: Turn two-step verification off
+      description: Takes the password and a current TOTP or recovery code.
+      operationId: disableMfa
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFADisableRequest"
+      responses:
+        "204":
+          description: Off; the secret and the recovery codes are deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "409":
+          $ref: "#/components/responses/MFAConflict"
         "422":
           $ref: "#/components/responses/ValidationFailed"
         "429":
@@ -348,6 +568,22 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    MFAForbidden:
+      description: |
+        The password asked again is wrong (`password_incorrect`), the code is wrong or was
+        already used (`mfa_code_invalid`), or a CSRF guard rejection. The session stays valid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    MFAConflict:
+      description: |
+        `mfa_already_enabled` (setup or enable while on), `mfa_not_enabled` (disable while
+        off) or `mfa_setup_required` (no setup to confirm, or it expired).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     TokenInvalid:
       description: The link is unknown, used or expired (`token_invalid`).
       content:
@@ -456,6 +692,94 @@ components:
         email:
           type: string
           format: email
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          description: The token from the link fragment.
+        password:
+          type: string
+          minLength: 10
+          maxLength: 1024
+          format: password
+    MFAChallenge:
+      type: object
+      required: [mfaRequired, mfaToken, expiresIn]
+      properties:
+        mfaRequired:
+          type: boolean
+          const: true
+        mfaToken:
+          type: string
+          description: Send it to `/auth/mfa/verify` with a code. Single use.
+        expiresIn:
+          type: integer
+          description: Seconds left to answer (300).
+    MFAVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [mfaToken, code]
+      properties:
+        mfaToken:
+          type: string
+        code:
+          type: string
+          description: A 6-digit TOTP code, or a recovery code (hyphens, spaces and case are ignored).
+          examples: ["123456", "abcd-efgh-ijkl-mnop"]
+    MFASetupRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password:
+          type: string
+          format: password
+    MFASetup:
+      type: object
+      required: [secret, otpauthUri, expiresIn]
+      properties:
+        secret:
+          type: string
+          description: Base32 secret, for typing into the app by hand.
+        otpauthUri:
+          type: string
+          description: "`otpauth://totp/...` URI, to show as a QR code."
+        expiresIn:
+          type: integer
+          description: Seconds left to confirm the setup.
+    MFAEnableRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: The current 6-digit code from the app.
+    RecoveryCodes:
+      type: object
+      required: [recoveryCodes]
+      properties:
+        recoveryCodes:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: string
+            examples: ["abcd-efgh-ijkl-mnop"]
+    MFADisableRequest:
+      type: object
+      additionalProperties: false
+      required: [password, code]
+      properties:
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: A TOTP code or a recovery code.
     RefreshRequest:
       type: object
       additionalProperties: false
@@ -538,6 +862,12 @@ components:
             - refresh_conflict
             - captcha_required
             - captcha_invalid
+            - password_incorrect
+            - mfa_code_invalid
+            - mfa_challenge_invalid
+            - mfa_already_enabled
+            - mfa_not_enabled
+            - mfa_setup_required
         requestId:
           type: string
         errors:

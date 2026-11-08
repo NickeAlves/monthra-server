@@ -77,13 +77,17 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 | `CSRF_SECRET` | (required) | Base64, at least 32 bytes (`make secrets`) |
 | `RATE_LIMIT_API_IP` | `300/m` | Baseline budget of `/api/v1` per client IP (`<n>/s`, `<n>/m`, `<n>/h`) |
 | `RATE_LIMIT_API_USER` | `100/m` | Budget of authenticated requests per user |
-| `RATE_LIMIT_AUTH_IP` / `RATE_LIMIT_AUTH_EMAIL` | `5/m` / `5/m` | Register, login and email verification together, per client IP and per target address |
+| `RATE_LIMIT_AUTH_IP` / `RATE_LIMIT_AUTH_EMAIL` | `5/m` / `5/m` | Register, login (and its MFA step), email verification and password recovery together, per client IP and per target address |
 | `RATE_LIMIT_REFRESH_IP` | `30/m` | Token refreshes per client IP |
+| `RATE_LIMIT_AUTH_MAIL` | `5/h` | Account emails (verification, sign-up attempt, password reset) one address receives |
 | `JWT_SIGNING_KEYS` | (required) | Ed25519 seeds as `kid:base64` pairs, comma-separated (`make secrets`) |
 | `JWT_ACTIVE_KID` | (required) | The kid that signs new tokens; the others only verify |
 | `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | `15m` / `720h` | Access: 1 to 15 minutes. Refresh: 1 hour to 90 days |
 | `REFRESH_REUSE_GRACE` | `10s` | A rotated refresh token reused this soon answers 409 instead of revoking the session (0 to 1 minute) |
 | `EMAIL_TOKEN_TTL` | `30m` | Lifetime of verification links (5 to 60 minutes) |
+| `RESET_TOKEN_TTL` | `15m` | Lifetime of password reset links (5 to 30 minutes) |
+| `ENCRYPTION_KEYS` | (required) | AES-256 keys (32 bytes) as `kid:base64` pairs, comma-separated (`make secrets`); never the CSRF or JWT keys |
+| `ENCRYPTION_ACTIVE_KID` | (required) | The kid that encrypts new values; the others only decrypt |
 | `PASSWORD_HASH_CONCURRENCY` | `4` | Parallel Argon2id hashes (64 MiB each) |
 | `HIBP_ENABLED` | `true` | Reject new passwords found in Have I Been Pwned (k-anonymity) |
 | `APP_PUBLIC_URL` | `http://localhost:3000` | Web app base URL used in email links; https outside `local` |
@@ -117,8 +121,15 @@ The flows and their answers are documented in [docs/openapi.yaml](docs/openapi.y
 - **Delivery:**
   - Browsers get `HttpOnly`, `Secure`, `SameSite=Strict` cookies and never see a token: `__Host-monthra_at` on `/`, and `__Secure-monthra_rt` on `/api/v1/auth/refresh` (`__Host-` requires `Path=/`).
   - Native clients get the tokens as JSON and send `Authorization: Bearer`.
+- **Password recovery:** `forgot-password` answers `202` whatever the address and emails a single-use link (`/reset-password#token=…`, 15 minutes) only to an existing account; a new request voids the earlier links. The reset applies the password policy and HIBP before spending the token, marks the address verified (the link proves control of the inbox), revokes every session in MongoDB and Redis and sends a "password changed" notice. One address gets at most `RATE_LIMIT_AUTH_MAIL` account emails, checked before the lookup, so the forms cannot flood someone else's inbox.
+- **Two-step verification (TOTP, RFC 6238):**
+  - SHA-1, 6 digits, 30 seconds and one step of drift each way, which every authenticator app supports. `mfa/setup` asks for the password again (a stolen session alone cannot turn MFA on and lock the owner out) and `mfa/enable` confirms a first code and returns 10 recovery codes (80 bits each, shown once).
+  - At rest the secret is sealed with AES-256-GCM (`kid:nonce|ciphertext`, bound to the user and field) and recovery codes are SHA-256 hashes. Secrets sealed with an old `kid` are sealed again with the active one on use.
+  - With MFA on, login answers `{mfaRequired, mfaToken}` (5 minutes, 5 codes, kept in Redis by hash) and `mfa/verify` opens the session. Each TOTP step works once (compare-and-set on `mfa.last_step`), each recovery code once (`$pull`), and of two concurrent verifications only one opens a session.
+  - Wrong codes and wrong step-up passwords count toward the lockout of the address, and the password alone no longer clears it, so knowing the password does not buy unlimited guesses at the code.
+  - `mfa/disable` takes the password and a code. Turning MFA on or off emails a notice. These routes answer a wrong password or code with `403`, never `401`.
 - **Email** goes through any SMTP relay, asynchronously. A bounded queue retries transient failures and drains on shutdown. Templates are translated, and they never include user-chosen text.
-- **Audit:** `register`, `email_verified`, `login_success`, `login_failure`, `logout` and `refresh_reuse_detected` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password or token.
+- **Audit:** `register`, `email_verified`, `login_success` (with how the last factor was checked), `login_failure`, `logout`, `refresh_reuse_detected`, `password_reset_requested`, `password_reset`, `reauth_failure`, `mfa_setup`, `mfa_enabled`, `mfa_disabled`, `mfa_failure` and `mfa_recovery_code_used` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password, token or code.
 
 ## Browser security
 
@@ -131,7 +142,7 @@ The flows and their answers are documented in [docs/openapi.yaml](docs/openapi.y
 ## Observability
 
 - Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and, on authenticated requests, `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
-- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, plus Go and process metrics.
+- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, plus Go and process metrics.
 - Traces: HTTP server spans named after the route, MongoDB command spans (operation and collection only, never query values) and Redis spans.
 
 ## Layout
@@ -143,7 +154,8 @@ internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
 internal/usecase/     use cases on ports (auth/)
-internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, lockout policy
+internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
+internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates
 internal/captcha/     Cloudflare Turnstile
 internal/audit/       audit log recorder
@@ -152,7 +164,7 @@ internal/ratelimit/   Redis GCRA rate limiter
 internal/i18n/        locale matching and translated messages
 internal/observability/  logger, metrics, tracing
 internal/repository/mongo/  MongoDB client, command tracing and repositories
-internal/cache/       Redis client, key naming (monthra:{env}:...), denylist and lockout
+internal/cache/       Redis client, key naming (monthra:{env}:...), denylist, lockout and MFA challenges
 migrations/           MongoDB indexes, applied at boot
 docs/                 OpenAPI document (embedded in the binary)
 deploy/mongo/         MongoDB init script (least-privilege app user)
