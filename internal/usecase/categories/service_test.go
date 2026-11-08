@@ -147,8 +147,39 @@ func (m *memMarker) MarkCategoriesSeeded(_ context.Context, userID string, at ti
 	return nil
 }
 
+// memUsage counts the transactions of each category (by id), like the
+// transactions store.
+type memUsage struct {
+	byCategory map[string]int
+	moves      []string
+	err        error
+	moveErr    error
+	// onMove runs after each move, to create a transaction in between.
+	onMove func()
+}
+
+func newMemUsage() *memUsage { return &memUsage{byCategory: map[string]int{}} }
+
+func (u *memUsage) CategoryInUse(_ context.Context, _, id string) (bool, error) {
+	return u.byCategory[id] > 0, u.err
+}
+
+func (u *memUsage) ReassignCategory(_ context.Context, _, from, to string, at time.Time) error {
+	if u.moveErr != nil {
+		return u.moveErr
+	}
+	u.moves = append(u.moves, fmt.Sprintf("%s->%s@%s", from, to, at.Format(time.StampMilli)))
+	u.byCategory[to] += u.byCategory[from]
+	delete(u.byCategory, from)
+	if u.onMove != nil {
+		u.onMove()
+		u.onMove = nil
+	}
+	return nil
+}
+
 func newService(store Store, marker SeedMarker, max int) *Service {
-	return NewService(store, marker, Options{Now: func() time.Time { return t0 }, MaxCategories: max})
+	return NewService(store, marker, newMemUsage(), Options{Now: func() time.Time { return t0 }, MaxCategories: max})
 }
 
 func food() domain.CategoryInput {
@@ -190,7 +221,7 @@ func TestListSeedsTheDefaultsOnce(t *testing.T) {
 	assert.Equal(t, 1, store.seedCalls, "a seeded user is never seeded again")
 
 	// A deleted default never comes back.
-	require.NoError(t, svc.Delete(ctx, "u1", list[0].ID))
+	require.NoError(t, svc.Delete(ctx, "u1", list[0].ID, ""))
 	after, err := svc.List(ctx, "u1", "")
 	require.NoError(t, err)
 	assert.Equal(t, defaultKeys()[1:], keys(after))
@@ -345,15 +376,92 @@ func TestAnotherUsersCategoryIsNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, domain.ErrNotFound)
 	_, err = svc.Update(ctx, "u2", c.ID, domain.CategoryPatch{Name: ptr("Mine")})
 	assert.ErrorIs(t, err, domain.ErrNotFound)
-	assert.ErrorIs(t, svc.Delete(ctx, "u2", c.ID), domain.ErrNotFound)
+	assert.ErrorIs(t, svc.Delete(ctx, "u2", c.ID, ""), domain.ErrNotFound)
+	assert.ErrorIs(t, svc.Delete(ctx, "u2", c.ID, c.ID), domain.ErrNotFound)
 	assert.Equal(t, "Food", store.categories[c.ID].Name, "untouched")
 
-	require.NoError(t, svc.Delete(ctx, "u1", c.ID))
-	assert.ErrorIs(t, svc.Delete(ctx, "u1", c.ID), domain.ErrNotFound)
+	require.NoError(t, svc.Delete(ctx, "u1", c.ID, ""))
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", c.ID, ""), domain.ErrNotFound)
+}
+
+func TestDeleteCategoryInUse(t *testing.T) {
+	store, usage := newMemStore(), newMemUsage()
+	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }})
+	ctx := context.Background()
+	food, err := svc.Create(ctx, "u1", food())
+	require.NoError(t, err)
+	fun, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Fun", Kind: "expense", Icon: "party-popper", Color: "#00AA00"})
+	require.NoError(t, err)
+	bonus, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Bonus", Kind: "income", Icon: "gift", Color: "#0000AA"})
+	require.NoError(t, err)
+	theirs, err := svc.Create(ctx, "u2", domain.CategoryInput{Name: "Theirs", Kind: "expense", Icon: "gift", Color: "#0000AA"})
+	require.NoError(t, err)
+	usage.byCategory[food.ID] = 3
+
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", food.ID, ""), domain.ErrCategoryInUse)
+	assert.Contains(t, store.categories, food.ID)
+
+	refused := func(reassignTo string) map[string]string {
+		var ve *domain.ValidationError
+		require.ErrorAs(t, svc.Delete(ctx, "u1", food.ID, reassignTo), &ve)
+		out := map[string]string{}
+		for _, f := range ve.Fields {
+			out[f.Field] = f.Code
+		}
+		return out
+	}
+	assert.Equal(t, map[string]string{"reassignTo": domain.CodeInvalid}, refused(food.ID), "to itself")
+	assert.Equal(t, map[string]string{"reassignTo": domain.CodeInvalid}, refused("ghost"))
+	assert.Equal(t, map[string]string{"reassignTo": domain.CodeInvalid}, refused(theirs.ID), "another user's reads like none")
+	assert.Equal(t, map[string]string{"reassignTo": domain.CodeKindMismatch}, refused(bonus.ID))
+	assert.Empty(t, usage.moves, "nothing moved")
+	assert.Contains(t, store.categories, food.ID)
+
+	// A transaction created between the move and the deletion moves too.
+	usage.onMove = func() { usage.byCategory[food.ID]++ }
+	require.NoError(t, svc.Delete(ctx, "u1", food.ID, fun.ID))
+	assert.NotContains(t, store.categories, food.ID)
+	assert.Equal(t, map[string]int{fun.ID: 4}, usage.byCategory)
+	at := t0.Truncate(time.Millisecond).Format(time.StampMilli)
+	assert.Equal(t, []string{food.ID + "->" + fun.ID + "@" + at, food.ID + "->" + fun.ID + "@" + at}, usage.moves)
+
+	// Moving from a category without transactions just deletes it.
+	require.NoError(t, svc.Delete(ctx, "u1", bonus.ID, ""))
+}
+
+func TestDeleteCategoryFailures(t *testing.T) {
+	ctx := context.Background()
+	setup := func() (*Service, *memStore, *memUsage, domain.Category, domain.Category) {
+		store, usage := newMemStore(), newMemUsage()
+		svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }})
+		a, err := svc.Create(ctx, "u1", food())
+		require.NoError(t, err)
+		b, err := svc.Create(ctx, "u1", food())
+		require.NoError(t, err)
+		return svc, store, usage, a, b
+	}
+
+	svc, _, usage, a, _ := setup()
+	usage.err = errors.New("mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", a.ID, ""), "check category use: mongo down")
+
+	svc, store, usage, a, b := setup()
+	usage.moveErr = errors.New("mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", a.ID, b.ID), "move transactions: mongo down")
+	assert.Contains(t, store.categories, a.ID, "nothing deleted before the move")
+
+	svc, store, usage, a, b = setup()
+	usage.onMove = func() { usage.moveErr = errors.New("mongo down") }
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", a.ID, b.ID), "move late transactions: mongo down")
+	assert.NotContains(t, store.categories, a.ID, "already deleted: only a write racing the deletion is left behind")
+
+	svc, store, _, a, b = setup()
+	store.err = errors.New("mongo down")
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", a.ID, b.ID), store.err)
 }
 
 func TestNewServiceDefaults(t *testing.T) {
-	svc := NewService(newMemStore(), newMemMarker(), Options{})
+	svc := NewService(newMemStore(), newMemMarker(), newMemUsage(), Options{})
 	assert.Equal(t, DefaultMaxCategories, svc.max)
 	assert.WithinDuration(t, time.Now(), svc.now(), time.Minute)
 }

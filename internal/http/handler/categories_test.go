@@ -24,6 +24,7 @@ type fakeCategories struct {
 	input      domain.CategoryInput
 	patch      domain.CategoryPatch
 	deleted    bool
+	reassignTo string
 }
 
 func (f *fakeCategories) first() domain.Category {
@@ -53,8 +54,8 @@ func (f *fakeCategories) Update(_ context.Context, userID, id string, p domain.C
 	return f.first(), f.err
 }
 
-func (f *fakeCategories) Delete(_ context.Context, userID, id string) error {
-	f.userID, f.id, f.deleted = userID, id, f.err == nil
+func (f *fakeCategories) Delete(_ context.Context, userID, id, reassignTo string) error {
+	f.userID, f.id, f.reassignTo, f.deleted = userID, id, reassignTo, f.err == nil
 	return f.err
 }
 
@@ -224,9 +225,25 @@ func TestDeleteCategory(t *testing.T) {
 	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 	assert.True(t, svc.deleted)
 	assert.Equal(t, "u1", svc.userID)
+	assert.Empty(t, svc.reassignTo)
+
+	w = serveCategories(svc, request(http.MethodDelete, "/categories/c1?reassignTo=c2", ""))
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, "c2", svc.reassignTo)
 
 	w = serveCategories(&fakeCategories{err: domain.ErrNotFound}, request(http.MethodDelete, "/categories/c1", ""))
 	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	w = serveCategories(&fakeCategories{err: domain.ErrCategoryInUse}, request(http.MethodDelete, "/categories/c1", ""))
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Equal(t, "category_in_use", problemOf(t, w).Code)
+
+	invalid := &domain.ValidationError{Fields: []domain.FieldError{{Field: "reassignTo", Code: domain.CodeKindMismatch}}}
+	w = serveCategories(&fakeCategories{err: invalid}, request(http.MethodDelete, "/categories/c1?reassignTo=c3", ""))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	p := problemOf(t, w)
+	require.Len(t, p.Errors, 1)
+	assert.Equal(t, "kind_mismatch", p.Errors[0].Code)
 }
 
 func TestCategoriesNeedAPrincipal(t *testing.T) {

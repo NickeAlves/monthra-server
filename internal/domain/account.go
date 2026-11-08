@@ -103,6 +103,29 @@ type Account struct {
 	UpdatedAt  time.Time
 }
 
+// Balance is what an account holds, in minor units of its currency: its
+// initial balance plus its transactions. Current counts the transactions up
+// to a day (the reader's today); Projected counts them all, future ones
+// included.
+type Balance struct {
+	Current   int64
+	Projected int64
+}
+
+// AccountWithBalance is an account and what it holds.
+type AccountWithBalance struct {
+	Account
+	Balance Balance
+}
+
+// WithBalance adds the initial balance of a to the sums of its transactions.
+func (a Account) WithBalance(sums Balance) AccountWithBalance {
+	return AccountWithBalance{Account: a, Balance: Balance{
+		Current:   a.InitialBalance + sums.Current,
+		Projected: a.InitialBalance + sums.Projected,
+	}}
+}
+
 // Archived reports whether the owner archived the account.
 func (a Account) Archived() bool { return a.ArchivedAt != nil }
 

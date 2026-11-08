@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -47,11 +48,16 @@ func Indexes() map[string][]mongo.IndexModel {
 					SetPartialFilterExpression(bson.D{{Key: "default_key", Value: bson.D{{Key: "$exists", Value: true}}}}),
 			},
 		},
+		// Every listing sorts by {date: -1, _id: -1} (_id breaks the ties of
+		// one day for cursor pagination), so each filter's index ends the
+		// same way and a page reads only its own entries.
 		repo.CollTransactions: {
-			// _id breaks ties between transactions on the same date for cursor pagination.
-			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "date", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("transactions_user_date")},
-			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "account_id", Value: 1}, {Key: "date", Value: -1}}, Options: options.Index().SetName("transactions_user_account_date")},
-			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "category_id", Value: 1}, {Key: "date", Value: -1}}, Options: options.Index().SetName("transactions_user_category_date")},
+			transactionsBy("transactions_user_date"),
+			transactionsBy("transactions_user_account_date_id", "account_id"),
+			// The destination of transfers: account statements and balances.
+			transactionsBy("transactions_user_to_account_date_id", "to_account_id"),
+			transactionsBy("transactions_user_category_date_id", "category_id"),
+			transactionsBy("transactions_user_tags_date_id", "tags"),
 		},
 		repo.CollRecurrences: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("recurrences_user")},
@@ -87,6 +93,25 @@ func Indexes() map[string][]mongo.IndexModel {
 	}
 }
 
+// obsolete lists, by collection, the indexes an earlier version created and
+// a later one replaced; Apply drops them where they still exist, so an old
+// database never keeps a stale index or clashes with a new definition.
+var obsolete = map[string][]string{
+	// Replaced by the *_date_id indexes, which match the listing order.
+	repo.CollTransactions: {"transactions_user_account_date", "transactions_user_category_date"},
+}
+
+// transactionsBy is an index of the transactions of a user by the fields
+// given, in the listing order.
+func transactionsBy(name string, fields ...string) mongo.IndexModel {
+	keys := bson.D{{Key: "user_id", Value: 1}}
+	for _, f := range fields {
+		keys = append(keys, bson.E{Key: f, Value: 1})
+	}
+	keys = append(keys, bson.E{Key: "date", Value: -1}, bson.E{Key: "_id", Value: -1})
+	return mongo.IndexModel{Keys: keys, Options: options.Index().SetName(name)}
+}
+
 // expiresAt is a TTL index that deletes a document once its expires_at passes.
 func expiresAt(name string) mongo.IndexModel {
 	return mongo.IndexModel{
@@ -98,6 +123,11 @@ func expiresAt(name string) mongo.IndexModel {
 // Apply creates every index, including the audit log TTL index. Re-running it
 // with the same definitions is a no-op.
 func Apply(ctx context.Context, db *mongo.Database, opts Options) error {
+	for coll, names := range obsolete {
+		if err := dropIndexes(ctx, db.Collection(coll), names); err != nil {
+			return err
+		}
+	}
 	for coll, models := range Indexes() {
 		if _, err := db.Collection(coll).Indexes().CreateMany(ctx, models); err != nil {
 			return fmt.Errorf("create indexes on %s: %w", coll, err)
@@ -133,6 +163,22 @@ func ensureTTL(ctx context.Context, coll *mongo.Collection, name, field string, 
 	}
 	if _, err := coll.Indexes().CreateOne(ctx, model); err != nil {
 		return fmt.Errorf("create TTL index %s: %w", name, err)
+	}
+	return nil
+}
+
+// dropIndexes drops the indexes of names that exist on coll.
+func dropIndexes(ctx context.Context, coll *mongo.Collection, names []string) error {
+	specs, err := coll.Indexes().ListSpecifications(ctx)
+	if err != nil {
+		return fmt.Errorf("list indexes on %s: %w", coll.Name(), err)
+	}
+	for _, spec := range specs {
+		if slices.Contains(names, spec.Name) {
+			if err := coll.Indexes().DropOne(ctx, spec.Name); err != nil {
+				return fmt.Errorf("drop obsolete index %s: %w", spec.Name, err)
+			}
+		}
 	}
 	return nil
 }

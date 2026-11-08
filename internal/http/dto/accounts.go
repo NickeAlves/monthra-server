@@ -52,24 +52,29 @@ func (r UpdateAccountRequest) Patch() domain.AccountPatch {
 	return domain.AccountPatch{Name: r.Name, InitialBalance: r.InitialBalance, Card: r.Card.toDomain(), Archived: r.Archived}
 }
 
-// Account is the public view of an account.
+// Account is the public view of an account. Balance counts the
+// transactions up to the day asked (the reader's today); ProjectedBalance
+// counts them all, future ones included. Both include the initial balance.
 type Account struct {
-	ID             string        `json:"id"`
-	Name           string        `json:"name"`
-	Type           string        `json:"type"`
-	Currency       string        `json:"currency"`
-	InitialBalance int64         `json:"initialBalance"`
-	Card           *CardSettings `json:"card"`
-	Source         string        `json:"source"`
-	Archived       bool          `json:"archived"`
-	CreatedAt      time.Time     `json:"createdAt"`
-	UpdatedAt      time.Time     `json:"updatedAt"`
+	ID               string        `json:"id"`
+	Name             string        `json:"name"`
+	Type             string        `json:"type"`
+	Currency         string        `json:"currency"`
+	InitialBalance   int64         `json:"initialBalance"`
+	Balance          int64         `json:"balance"`
+	ProjectedBalance int64         `json:"projectedBalance"`
+	Card             *CardSettings `json:"card"`
+	Source           string        `json:"source"`
+	Archived         bool          `json:"archived"`
+	CreatedAt        time.Time     `json:"createdAt"`
+	UpdatedAt        time.Time     `json:"updatedAt"`
 }
 
 // NewAccount maps an account to its public view; the owner id stays out.
-func NewAccount(a domain.Account) Account {
+func NewAccount(a domain.AccountWithBalance) Account {
 	out := Account{
 		ID: a.ID, Name: a.Name, Type: string(a.Type), Currency: a.Currency, InitialBalance: a.InitialBalance,
+		Balance: a.Balance.Current, ProjectedBalance: a.Balance.Projected,
 		Source: string(a.Source), Archived: a.Archived(), CreatedAt: a.CreatedAt.UTC(), UpdatedAt: a.UpdatedAt.UTC(),
 	}
 	if a.Card != nil {
@@ -84,7 +89,7 @@ type AccountsResponse struct {
 }
 
 // NewAccounts maps a list of accounts; an empty list is [], never null.
-func NewAccounts(list []domain.Account) AccountsResponse {
+func NewAccounts(list []domain.AccountWithBalance) AccountsResponse {
 	out := AccountsResponse{Accounts: make([]Account, len(list))}
 	for i, a := range list {
 		out.Accounts[i] = NewAccount(a)

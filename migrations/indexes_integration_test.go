@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -115,4 +116,30 @@ func TestApplyRejectsInvalidTTL(t *testing.T) {
 
 	err = Apply(ctx, client.Database("monthra_test"), Options{AuditLogTTL: 0})
 	assert.ErrorContains(t, err, "TTL must be between")
+}
+
+func TestApplyDropsObsoleteIndexes(t *testing.T) {
+	ctx := context.Background()
+	client, err := mongo.Connect(options.Client().ApplyURI(testutil.StartMongo(t)))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Disconnect(ctx) })
+	db := client.Database("monthra_test")
+
+	// A database from before the *_date_id indexes.
+	_, err = db.Collection(repo.CollTransactions).Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "account_id", Value: 1}, {Key: "date", Value: -1}}, Options: options.Index().SetName("transactions_user_account_date")},
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "category_id", Value: 1}, {Key: "date", Value: -1}}, Options: options.Index().SetName("transactions_user_category_date")},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, Apply(ctx, db, Options{AuditLogTTL: time.Hour}))
+	specs := indexSpecs(t, db, repo.CollTransactions)
+	assert.NotContains(t, specs, "transactions_user_account_date")
+	assert.NotContains(t, specs, "transactions_user_category_date")
+	assert.Contains(t, specs, "transactions_user_account_date_id")
+	var keys bson.D
+	require.NoError(t, bson.Unmarshal(specs["transactions_user_account_date_id"].KeysDocument, &keys))
+	assert.Equal(t,
+		bson.D{{Key: "user_id", Value: int32(1)}, {Key: "account_id", Value: int32(1)}, {Key: "date", Value: int32(-1)}, {Key: "_id", Value: int32(-1)}},
+		keys, "the listing order")
 }

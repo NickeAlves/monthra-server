@@ -34,7 +34,9 @@ const (
 	ErrMFANotEnabled        Key = "mfa_not_enabled"
 	ErrMFASetupRequired     Key = "mfa_setup_required"
 
-	ErrLimitReached Key = "limit_reached"
+	ErrLimitReached  Key = "limit_reached"
+	ErrAccountInUse  Key = "account_in_use"
+	ErrCategoryInUse Key = "category_in_use"
 )
 
 // Message is a translated title and detail.
@@ -175,6 +177,16 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Limite atingido", "Você já tem o número máximo de itens deste tipo. Apague ou arquive algum antes de criar outro."},
 		EsES: {"Límite alcanzado", "Ya tienes el número máximo de elementos de este tipo. Elimina o archiva alguno antes de crear otro."},
 		EnUS: {"Limit reached", "You already have the maximum number of items of this kind. Delete or archive one before creating another."},
+	},
+	ErrAccountInUse: {
+		PtBR: {"Conta com lançamentos", "Esta conta tem lançamentos e não pode ser apagada. Arquive a conta para escondê-la mantendo o histórico."},
+		EsES: {"Cuenta con movimientos", "Esta cuenta tiene movimientos y no se puede eliminar. Archívala para ocultarla y conservar el historial."},
+		EnUS: {"Account in use", "This account has transactions and cannot be deleted. Archive it to hide it and keep its history."},
+	},
+	ErrCategoryInUse: {
+		PtBR: {"Categoria com lançamentos", "Esta categoria tem lançamentos. Escolha outra categoria do mesmo tipo para movê-los antes de apagar."},
+		EsES: {"Categoría con movimientos", "Esta categoría tiene movimientos. Elige otra categoría del mismo tipo para moverlos antes de eliminarla."},
+		EnUS: {"Category in use", "This category has transactions. Pick another category of the same kind to move them to before deleting it."},
 	},
 }
 

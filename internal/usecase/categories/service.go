@@ -2,6 +2,7 @@ package categories
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,6 +18,7 @@ const DefaultMaxCategories = 200
 type Service struct {
 	store  Store
 	marker SeedMarker
+	usage  Usage
 	now    func() time.Time
 	max    int
 }
@@ -30,14 +32,14 @@ type Options struct {
 }
 
 // NewService returns the service.
-func NewService(store Store, marker SeedMarker, o Options) *Service {
+func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
 	if o.MaxCategories <= 0 {
 		o.MaxCategories = DefaultMaxCategories
 	}
-	return &Service{store: store, marker: marker, now: o.Now, max: o.MaxCategories}
+	return &Service{store: store, marker: marker, usage: usage, now: o.Now, max: o.MaxCategories}
 }
 
 // clock is the current time at the precision MongoDB keeps (milliseconds),
@@ -137,7 +139,65 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Catego
 
 // Delete removes one of the caller's categories, or answers
 // domain.ErrNotFound. A deleted default is not seeded again.
-func (s *Service) Delete(ctx context.Context, userID, id string) error {
+//
+// A category with transactions answers domain.ErrCategoryInUse, unless
+// reassignTo names another of the caller's categories, of the same kind,
+// to move them to first (else a *domain.ValidationError on reassignTo).
+// The move runs again after the deletion, so a transaction created in
+// between is not left naming a category that is gone.
+func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) error {
+	c, err := s.Get(ctx, userID, id)
+	if err != nil {
+		return err
+	}
+	if reassignTo == "" {
+		inUse, err := s.usage.CategoryInUse(ctx, userID, id)
+		if err != nil {
+			return fmt.Errorf("check category use: %w", err)
+		}
+		if inUse {
+			return domain.ErrCategoryInUse
+		}
+		return s.delete(ctx, userID, id)
+	}
+
+	if err := s.checkTarget(ctx, c, reassignTo); err != nil {
+		return err
+	}
+	now := s.clock()
+	if err := s.usage.ReassignCategory(ctx, userID, id, reassignTo, now); err != nil {
+		return fmt.Errorf("move transactions: %w", err)
+	}
+	if err := s.delete(ctx, userID, id); err != nil {
+		return err
+	}
+	if err := s.usage.ReassignCategory(ctx, userID, id, reassignTo, now); err != nil {
+		return fmt.Errorf("move late transactions: %w", err)
+	}
+	return nil
+}
+
+// checkTarget checks that the transactions of c may move to category to.
+func (s *Service) checkTarget(ctx context.Context, c domain.Category, to string) error {
+	refuse := func(code string) error {
+		return &domain.ValidationError{Fields: []domain.FieldError{{Field: "reassignTo", Code: code}}}
+	}
+	if to == c.ID {
+		return refuse(domain.CodeInvalid)
+	}
+	target, err := s.store.ByID(ctx, c.UserID, to)
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return refuse(domain.CodeInvalid)
+	case err != nil:
+		return fmt.Errorf("find category: %w", err)
+	case target.Kind != c.Kind:
+		return refuse(domain.CodeKindMismatch)
+	}
+	return nil
+}
+
+func (s *Service) delete(ctx context.Context, userID, id string) error {
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete category: %w", err)
 	}
