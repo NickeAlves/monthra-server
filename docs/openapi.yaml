@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -152,8 +152,9 @@ info:
       the last page) to pass back as `?cursor=`. Filters: `from`/`to` (days, both included),
       `accountId` (its transactions and the transfers it received), `categoryId`, `kind`,
       `tag`, `q` (text in the description, ignoring case and accents), `invoice` (with
-      `accountId`: the transactions of one invoice of that card) and `installmentGroupId`
-      (the installments of one purchase).
+      `accountId`: the transactions of one invoice of that card), `installmentGroupId`
+      (the installments of one purchase) and `recurrenceId` (the occurrences of one
+      recurrence).
     - Every route acts on the caller's transactions only: another user's transaction, or an
       id of another user's account or category in the body, reads like one that does not
       exist (`404`, or `invalid` on the field).
@@ -181,6 +182,42 @@ info:
       `scope=all` (`scope: invalid` otherwise).
     - Deleting installments leaves the others numbered as they were (`1/12`); the number of
       installments never changes (delete the purchase and create it again).
+
+    ## Recurrences (`/api/v1/recurrences`)
+
+    - A recurrence is a transaction that repeats (rent, a subscription, a salary, a weekly
+      saving): an expense, income or transfer with the fields of a transaction, without its
+      day, and a rule. `frequency` is `daily`, `weekly`, `monthly` or `yearly`, every
+      `interval` (1 to 99) of them, counted from `startDate`: a monthly rule from January 31
+      falls on February 28, then March 31; a yearly one from February 29 on February 28 of
+      common years. It ends on `endDate` (the last day an occurrence may fall on), or after
+      `count` occurrences (stored as that `endDate`), or never.
+    - Occurrences are created as transactions when they fall due, on the reads of
+      transactions, accounts (balances), invoices and recurrences, up to `?asOf` (the
+      client's local today; today in UTC when absent; never more than a day from today in
+      UTC). A `startDate` in the past creates the history at once (at most 500 per read; the
+      next reads create the rest), and after a long absence the first read creates what fell
+      due meanwhile. Each occurrence carries `recurrence: {id, occurrenceDate}`, the day the
+      rule gave it, and is created only once.
+    - `nextDate` is the next occurrence not created yet (null once the recurrence ended),
+      `lastDate` the last one created. `GET /recurrences/upcoming?to=` projects the next
+      ones, stored nowhere.
+    - `PATCH /recurrences/{id}` changes what the next occurrences will be, never the
+      transactions already created. A new `startDate` must come after `lastDate`
+      (`out_of_range`): the rent moving to the 10th from December is
+      `{"startDate": "2026-12-10"}`. `DELETE /recurrences/{id}` stops the recurrence and keeps
+      its transactions.
+    - On an occurrence, `PATCH /transactions/{id}?scope=future|all` gives the later (or all)
+      occurrences and the recurrence itself the changes it makes to the one addressed:
+      `amount`, `categoryId`, `description`, `tags`, `accountId`, `toAccountId` and
+      `toAmount`. An occurrence moved to another account picks its invoice again by its own
+      day. Its `date` and invoice change with `scope=this` only (`scope: invalid`); the days
+      of the next ones change with the rule. `DELETE ?scope=future` ends the recurrence
+      before the occurrence and deletes it and the later ones; `?scope=all` deletes the
+      recurrence and every occurrence.
+    - An account an active recurrence names cannot be archived, and one any recurrence names
+      cannot be deleted (`409 used_by_recurrence`); a category one names cannot be deleted
+      without `reassignTo`, which moves the recurrences too.
 
     ## Credit card invoices (`/api/v1/accounts/{id}/invoices`)
 
@@ -234,6 +271,8 @@ tags:
     description: The caller's expenses, income and transfers
   - name: invoices
     description: The invoices of the caller's credit cards
+  - name: recurrences
+    description: The caller's recurring transactions and their occurrences
 paths:
   /healthz:
     get:
@@ -1007,7 +1046,8 @@ paths:
       description: |
         Absent fields stay as they are; `card` replaces the whole settings (an absent `limit`
         removes the limit). `type`, `currency` and `source` are not fields: sending them answers
-        `400`. A change that changes nothing answers the account as it is.
+        `400`. A change that changes nothing answers the account as it is. Archiving an
+        account an active recurrence names answers `409 used_by_recurrence`.
       operationId: updateAccount
       security:
         - bearerAuth: []
@@ -1031,6 +1071,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/UsedByRecurrence"
         "422":
           $ref: "#/components/responses/ValidationFailed"
         "401":
@@ -1045,7 +1087,8 @@ paths:
       description: |
         Deletes an account without transactions for good. An account with transactions (as
         their account or as the destination of a transfer) answers `409 account_in_use`:
-        archive it to keep its history.
+        archive it to keep its history. One a recurrence names, even an ended one, answers
+        `409 used_by_recurrence`.
       operationId: deleteAccount
       security:
         - bearerAuth: []
@@ -1265,7 +1308,8 @@ paths:
         transactions answers `409 category_in_use`, unless `reassignTo` names another of the
         caller's categories of the same kind: its transactions move there first
         (`reassignTo: invalid` for an unknown or the same category, `kind_mismatch` for the
-        other kind).
+        other kind), and the recurrences naming it too. Without `reassignTo`, a category a
+        recurrence names answers `409 used_by_recurrence`.
       operationId: deleteCategory
       security:
         - bearerAuth: []
@@ -1363,6 +1407,13 @@ paths:
           description: The installments of one purchase (`installment.groupId`).
           schema:
             type: string
+        - name: recurrenceId
+          in: query
+          required: false
+          description: The occurrences of one recurrence (`recurrence.id`).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/AsOf"
         - name: limit
           in: query
           required: false
@@ -1474,7 +1525,8 @@ paths:
         Between accounts of one currency `toAmount` follows `amount`; a change that makes a
         transfer cross currencies needs `toAmount`. A change that changes nothing answers the
         transaction as it is. On an installment, `scope` reaches the other installments of
-        the purchase (see Installments).
+        the purchase (see Installments); on an occurrence, the other occurrences and the
+        recurrence (see Recurrences).
       operationId: updateTransaction
       security:
         - bearerAuth: []
@@ -1511,7 +1563,9 @@ paths:
       summary: Delete a transaction
       description: |
         Deletes the transaction for good; on an installment, `scope` reaches the others of
-        the purchase, and the ones left keep their numbers.
+        the purchase, and the ones left keep their numbers. On an occurrence, `future` ends
+        the recurrence before it and deletes the later ones too; `all` deletes the recurrence
+        and every occurrence.
       operationId: deleteTransaction
       security:
         - bearerAuth: []
@@ -1533,6 +1587,212 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/recurrences:
+    get:
+      tags: [recurrences]
+      summary: List the recurrences
+      description: |
+        The whole list (up to 200, ended ones included), oldest first, after the occurrences
+        due up to `asOf` are created.
+      operationId: listRecurrences
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: "The recurrences (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurrenceList"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [recurrences]
+      summary: Create a recurrence
+      description: |
+        The template follows the rules of a transaction on `startDate`: the accounts and the
+        category are looked up among the caller's records only, and an archived account is
+        `archived`. The occurrences due up to `asOf` are created at once, so the answer shows
+        `lastDate` and `nextDate` after them. A user holds at most 200 recurrences
+        (`409 limit_reached`).
+      operationId: createRecurrence
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecurrenceCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The path of the new recurrence.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recurrence"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/LimitReached"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/recurrences/upcoming:
+    get:
+      tags: [recurrences]
+      summary: Project the next occurrences
+      description: |
+        The occurrences of the caller's active recurrences not created yet, up to `to`,
+        earliest first (at most 1000). Stored nowhere: what a later read will create.
+      operationId: upcomingRecurrences
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: to
+          in: query
+          required: false
+          description: |
+            The last day projected: 30 days after `asOf` by default, at most 366 after it
+            (`out_of_range`), not before it (`invalid`).
+          schema:
+            $ref: "#/components/schemas/Date"
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: "The projection (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpcomingList"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/recurrences/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [recurrences]
+      summary: Read a recurrence
+      operationId: getRecurrence
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: "The recurrence (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recurrence"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [recurrences]
+      summary: Change a recurrence
+      description: |
+        Changes what the next occurrences will be, never the transactions already created
+        (a scoped `PATCH /transactions/{id}` changes those). `kind`, `currency` and `source`
+        are not fields: sending them answers `400`. The occurrences the new rule makes due up
+        to `asOf` are created at once.
+      operationId: updateRecurrence
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecurrencePatch"
+      responses:
+        "200":
+          description: The recurrence after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recurrence"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [recurrences]
+      summary: Delete a recurrence
+      description: |
+        Stops the recurrence for good; the transactions it created stay, with their
+        `recurrence` link. `DELETE /transactions/{id}?scope=all` on an occurrence deletes both.
+      operationId: deleteRecurrence
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     AsOf:
@@ -1540,8 +1800,9 @@ components:
       in: query
       required: false
       description: |
-        The day `balance` counts transactions up to: the client's local today. Today in UTC
-        when absent.
+        The client's local today: `balance` counts the transactions up to it, and the
+        occurrences of the recurrences due up to it are created first (never more than a day
+        from today in UTC). Today in UTC when absent.
       schema:
         $ref: "#/components/schemas/Date"
     EditScope:
@@ -1550,8 +1811,10 @@ components:
       required: false
       description: |
         How far the change reaches on an installment: `this` one, it and the `future` ones
-        (numbered after it), or `all` of the purchase. Outside a purchase, the transaction
-        alone. An unknown value answers `422` (`scope: invalid`).
+        (numbered after it), or `all` of the purchase; on an occurrence, it and the later
+        occurrences of its recurrence (by their rule day) or all of them, and the recurrence.
+        Outside a series, the transaction alone. An unknown value answers `422`
+        (`scope: invalid`).
       schema:
         type: string
         enum: [this, future, all]
@@ -1674,13 +1937,25 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     AccountInUse:
-      description: The account has transactions (`account_in_use`); archive it instead.
+      description: |
+        The account has transactions (`account_in_use`): archive it instead. Or a recurrence
+        names it (`used_by_recurrence`): end the recurrence or move it to another account.
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
     CategoryInUse:
-      description: The category has transactions (`category_in_use`); pass `reassignTo` to move them.
+      description: |
+        The category has transactions (`category_in_use`) or a recurrence names it
+        (`used_by_recurrence`); pass `reassignTo` to move them.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UsedByRecurrence:
+      description: |
+        An active recurrence names the account (`used_by_recurrence`): end the recurrence or
+        move it to another account before archiving this one.
       content:
         application/problem+json:
           schema:
@@ -2333,7 +2608,7 @@ components:
           $ref: "#/components/schemas/Tags"
     Transaction:
       type: object
-      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, invoiceMonth, toInvoiceMonth, description, tags, installment, source, createdAt, updatedAt]
+      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, invoiceMonth, toInvoiceMonth, description, tags, installment, recurrence, source, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -2381,6 +2656,11 @@ components:
             - $ref: "#/components/schemas/Installment"
             - type: "null"
           description: Null outside an installment purchase.
+        recurrence:
+          oneOf:
+            - $ref: "#/components/schemas/RecurrenceLink"
+            - type: "null"
+          description: Null except on the occurrences of a recurrence.
         source:
           type: string
           enum: [manual, open_finance]
@@ -2405,6 +2685,232 @@ components:
           type: integer
           minimum: 2
           maximum: 48
+    RecurrenceLink:
+      type: object
+      required: [id, occurrenceDate]
+      properties:
+        id:
+          type: string
+          description: The recurrence that created the transaction.
+        occurrenceDate:
+          $ref: "#/components/schemas/Date"
+          description: The day its rule gave it; it stays when the transaction's `date` is edited.
+    RecurrenceCreate:
+      type: object
+      additionalProperties: false
+      required: [kind, accountId, amount, frequency, startDate]
+      properties:
+        kind:
+          type: string
+          enum: [expense, income, transfer]
+          description: Fixed for the life of the recurrence.
+        accountId:
+          type: string
+          description: An active account of the caller, as on a transaction.
+        categoryId:
+          type: string
+          description: Required on expenses and income (a category of the same kind); refused on transfers.
+        toAccountId:
+          type: string
+          description: Transfers only, and required there.
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: [integer, "null"]
+          format: int64
+          minimum: 1
+          maximum: 10000000000000
+          description: Transfers between two currencies only, as on a transaction.
+        description:
+          type: string
+          maxLength: 200
+        tags:
+          $ref: "#/components/schemas/Tags"
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+          minimum: 1
+          maximum: 99
+          default: 1
+          description: Every that many days, weeks, months or years.
+        startDate:
+          $ref: "#/components/schemas/Date"
+          description: The first occurrence; in the past, the history is created at once.
+        endDate:
+          $ref: "#/components/schemas/Date"
+          description: The last day an occurrence may fall on; not before `startDate` (`invalid`).
+        count:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: "Ends after that many occurrences, instead of `endDate` (`count: invalid` with both)."
+    RecurrencePatch:
+      type: object
+      additionalProperties: false
+      description: |
+        Changes the occurrences not created yet only. A field sent with the value it already
+        has changes nothing, so a client may send its whole form.
+      properties:
+        accountId:
+          type: string
+        categoryId:
+          type: string
+          description: Expenses and income only.
+        toAccountId:
+          type: string
+          description: Transfers only.
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10000000000000
+          description: Transfers only.
+        description:
+          type: string
+          maxLength: 200
+          description: An empty string clears it.
+        tags:
+          $ref: "#/components/schemas/Tags"
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+          minimum: 1
+          maximum: 99
+        startDate:
+          $ref: "#/components/schemas/Date"
+          description: |
+            Where the rule counts from; after `lastDate` (`out_of_range`), so the series never
+            covers again the days it gave.
+        endDate:
+          type: string
+          description: |
+            A day not before `startDate`, or an empty string for no end. A later end brings an
+            ended recurrence back (its account must be active: `accountId: archived`).
+    Recurrence:
+      type: object
+      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, description, tags, frequency, interval, startDate, endDate, nextDate, lastDate, source, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [expense, income, transfer]
+        accountId:
+          type: string
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        categoryId:
+          type: [string, "null"]
+          description: Null on transfers.
+        toAccountId:
+          type: [string, "null"]
+          description: Null except on transfers.
+        toCurrency:
+          type: [string, "null"]
+          enum: [BRL, USD, EUR, null]
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: [integer, "null"]
+          format: int64
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+        startDate:
+          $ref: "#/components/schemas/Date"
+        endDate:
+          type: [string, "null"]
+          format: date
+          description: Null with no end.
+        nextDate:
+          type: [string, "null"]
+          format: date
+          description: The next occurrence not created yet; null once the recurrence ended.
+        lastDate:
+          type: [string, "null"]
+          format: date
+          description: The last occurrence created; null before the first one.
+        source:
+          type: string
+          enum: [manual]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RecurrenceList:
+      type: object
+      required: [recurrences]
+      properties:
+        recurrences:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/Recurrence"
+    UpcomingOccurrence:
+      type: object
+      required: [recurrenceId, date, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, description, tags, invoiceMonth, toInvoiceMonth]
+      description: A transaction a recurrence will create, with the invoice its day falls in on a card.
+      properties:
+        recurrenceId:
+          type: string
+        date:
+          $ref: "#/components/schemas/Date"
+        kind:
+          type: string
+          enum: [expense, income, transfer]
+        accountId:
+          type: string
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        categoryId:
+          type: [string, "null"]
+        toAccountId:
+          type: [string, "null"]
+        toCurrency:
+          type: [string, "null"]
+          enum: [BRL, USD, EUR, null]
+        amount:
+          $ref: "#/components/schemas/Amount"
+        toAmount:
+          type: [integer, "null"]
+          format: int64
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        invoiceMonth:
+          type: [string, "null"]
+        toInvoiceMonth:
+          type: [string, "null"]
+    UpcomingList:
+      type: object
+      required: [occurrences]
+      properties:
+        occurrences:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/UpcomingOccurrence"
     TransactionPage:
       type: object
       required: [transactions, nextCursor]
