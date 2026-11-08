@@ -58,6 +58,10 @@ func Indexes() map[string][]mongo.IndexModel {
 			transactionsBy("transactions_user_to_account_date_id", "to_account_id"),
 			transactionsBy("transactions_user_category_date_id", "category_id"),
 			transactionsBy("transactions_user_tags_date_id", "tags"),
+			// The legs on a credit card, by invoice: an invoice's statement
+			// and the sums of a card's invoices.
+			transactionsByInvoice("transactions_user_account_invoice_date_id", "account_id", "invoice_month"),
+			transactionsByInvoice("transactions_user_to_account_invoice_date_id", "to_account_id", "to_invoice_month"),
 		},
 		repo.CollRecurrences: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("recurrences_user")},
@@ -110,6 +114,16 @@ func transactionsBy(name string, fields ...string) mongo.IndexModel {
 	}
 	keys = append(keys, bson.E{Key: "date", Value: -1}, bson.E{Key: "_id", Value: -1})
 	return mongo.IndexModel{Keys: keys, Options: options.Index().SetName(name)}
+}
+
+// transactionsByInvoice is an index of the card legs of the transactions of
+// a user, by account and invoice, in the listing order. It is partial: only
+// a leg on a credit card has an invoice, and the store never writes a null
+// one.
+func transactionsByInvoice(name, account, invoice string) mongo.IndexModel {
+	m := transactionsBy(name, account, invoice)
+	m.Options.SetPartialFilterExpression(bson.D{{Key: invoice, Value: bson.D{{Key: "$exists", Value: true}}}})
+	return m
 }
 
 // expiresAt is a TTL index that deletes a document once its expires_at passes.

@@ -129,24 +129,34 @@ func (s *Service) Get(ctx context.Context, userID, id string) (domain.Transactio
 }
 
 // Update applies a patch to one of the caller's transactions and returns
-// it. Only the records the patch moves it to are looked up; a patch that
-// changes nothing writes nothing.
+// it. Only the records the patch moves it to are looked up, and the card a
+// leg stays on when the patch moves its day or names its invoice (for the
+// card's settings); a patch that changes nothing writes nothing.
 func (s *Service) Update(ctx context.Context, userID, id string, p domain.TransactionPatch) (domain.Transaction, error) {
 	current, err := s.Get(ctx, userID, id)
 	if err != nil {
 		return domain.Transaction{}, err
 	}
+	redated := p.Date != nil && *p.Date != current.Date.String()
 	var refs domain.TransactionRefs
-	if moved(p.AccountID, current.AccountID) {
-		if refs.Account, err = s.account(ctx, userID, *p.AccountID); err != nil {
-			return domain.Transaction{}, err
-		}
+	switch {
+	case moved(p.AccountID, current.AccountID):
+		refs.Account, err = s.account(ctx, userID, *p.AccountID)
+	case needsCard(redated, p.InvoiceMonth, current.InvoiceMonth):
+		refs.Account, err = s.account(ctx, userID, current.AccountID)
+	}
+	if err != nil {
+		return domain.Transaction{}, err
 	}
 	if current.IsTransfer() {
-		if moved(p.ToAccountID, current.ToAccountID) {
-			if refs.ToAccount, err = s.account(ctx, userID, *p.ToAccountID); err != nil {
-				return domain.Transaction{}, err
-			}
+		switch {
+		case moved(p.ToAccountID, current.ToAccountID):
+			refs.ToAccount, err = s.account(ctx, userID, *p.ToAccountID)
+		case needsCard(redated, p.ToInvoiceMonth, current.ToInvoiceMonth):
+			refs.ToAccount, err = s.account(ctx, userID, current.ToAccountID)
+		}
+		if err != nil {
+			return domain.Transaction{}, err
 		}
 	} else if moved(p.CategoryID, current.CategoryID) {
 		if refs.Category, err = s.category(ctx, userID, *p.CategoryID); err != nil {
@@ -173,6 +183,13 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 		return fmt.Errorf("delete transaction: %w", err)
 	}
 	return nil
+}
+
+// needsCard reports whether a leg that stays on its account needs that
+// account looked up: when the patch names the leg's invoice, or moves the
+// day of a leg on a card (only those have an invoice).
+func needsCard(redated bool, invoice *string, current domain.Month) bool {
+	return invoice != nil || (redated && !current.IsZero())
 }
 
 // moved reports whether a patch names a reference other than the current one.

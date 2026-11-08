@@ -26,8 +26,11 @@ func NewTransactions(db *mongo.Database) *Transactions {
 
 // transactionDoc is one transaction. category_id is absent on transfers;
 // the to_* fields are present on transfers only. date is the civil day at
-// midnight UTC. description_search is the folded description that text
-// search matches; it never leaves the store.
+// midnight UTC. invoice_month ("YYYY-MM") is present when account_id is a
+// credit card, to_invoice_month when to_account_id is; neither is ever null,
+// so the partial invoice indexes hold exactly the card legs.
+// description_search is the folded description that text search matches;
+// it never leaves the store.
 type transactionDoc struct {
 	ID                bson.ObjectID  `bson:"_id"`
 	UserID            bson.ObjectID  `bson:"user_id"`
@@ -40,6 +43,8 @@ type transactionDoc struct {
 	ToCurrency        string         `bson:"to_currency,omitempty"`
 	ToAmount          int64          `bson:"to_amount,omitempty"`
 	Date              time.Time      `bson:"date"`
+	InvoiceMonth      string         `bson:"invoice_month,omitempty"`
+	ToInvoiceMonth    string         `bson:"to_invoice_month,omitempty"`
 	Description       string         `bson:"description"`
 	DescriptionSearch string         `bson:"description_search"`
 	Tags              []string       `bson:"tags"`
@@ -95,6 +100,7 @@ func (d *transactionDoc) setEditable(t domain.Transaction) error {
 	}
 	d.AccountID, d.Currency, d.CategoryID, d.Amount = account, t.Currency, category, t.Amount
 	d.ToAccountID, d.ToCurrency, d.ToAmount = to, t.ToCurrency, t.ToAmount
+	d.InvoiceMonth, d.ToInvoiceMonth = t.InvoiceMonth.String(), t.ToInvoiceMonth.String()
 	d.Date, d.Description, d.DescriptionSearch, d.Tags = t.Date.Time(), t.Description, domain.FoldText(t.Description), tags
 	return nil
 }
@@ -104,7 +110,8 @@ func (d transactionDoc) toDomain() domain.Transaction {
 		ID: d.ID.Hex(), UserID: d.UserID.Hex(), Kind: domain.TransactionKind(d.Kind),
 		AccountID: d.AccountID.Hex(), Currency: d.Currency, Amount: d.Amount,
 		ToCurrency: d.ToCurrency, ToAmount: d.ToAmount,
-		Date: domain.DateOf(d.Date.UTC()), Description: d.Description, Tags: d.Tags,
+		Date: domain.DateOf(d.Date.UTC()), InvoiceMonth: storedMonth(d.InvoiceMonth),
+		ToInvoiceMonth: storedMonth(d.ToInvoiceMonth), Description: d.Description, Tags: d.Tags,
 		Source: domain.Source(d.Source), CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 	if d.CategoryID != nil {
@@ -117,6 +124,16 @@ func (d transactionDoc) toDomain() domain.Transaction {
 		t.Tags = []string{}
 	}
 	return t
+}
+
+// storedMonth reads a month the store wrote ("YYYY-MM"); "" is no month.
+// It takes any month the domain computed, beyond the ones clients may name.
+func storedMonth(s string) domain.Month {
+	t, err := time.Parse("2006-01", s)
+	if err != nil {
+		return domain.Month{}
+	}
+	return domain.NewMonth(t.Year(), t.Month())
 }
 
 // Insert stores t with a new id and returns it.
@@ -174,7 +191,24 @@ func (r *Transactions) Update(ctx context.Context, t domain.Transaction) error {
 	} else {
 		set = append(set, bson.E{Key: "category_id", Value: doc.CategoryID})
 	}
-	res, err := r.coll.UpdateOne(ctx, filter, bson.D{{Key: "$set", Value: set}})
+	// An invoice a leg no longer has is removed, never stored as null.
+	var unset bson.D
+	invoices := []bson.E{{Key: "invoice_month", Value: doc.InvoiceMonth}}
+	if t.IsTransfer() {
+		invoices = append(invoices, bson.E{Key: "to_invoice_month", Value: doc.ToInvoiceMonth})
+	}
+	for _, inv := range invoices {
+		if inv.Value == "" {
+			unset = append(unset, bson.E{Key: inv.Key, Value: ""})
+		} else {
+			set = append(set, inv)
+		}
+	}
+	update := bson.D{{Key: "$set", Value: set}}
+	if len(unset) > 0 {
+		update = append(update, bson.E{Key: "$unset", Value: unset})
+	}
+	res, err := r.coll.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("update transaction: %w", err)
 	}
@@ -226,68 +260,92 @@ func (r *Transactions) List(ctx context.Context, userID string, f domain.Transac
 	return out, nil
 }
 
-// listFilter is the query of List. Each alternative ($or) goes in one
-// $and, since a document holds one $or key.
+// listFilter is the query of List. A filter by account (or by invoice)
+// matches either leg of a transaction, each through its own index (see
+// eitherLeg). The cursor bounds the date, so a later page starts reading
+// where the previous one ended.
 func listFilter(userID string, f domain.TransactionFilter, after *domain.TransactionCursor) (bson.D, error) {
 	uid, err := objectID(userID)
 	if err != nil {
 		return nil, err
 	}
-	filter := bson.D{{Key: "user_id", Value: uid}}
-	var alternatives bson.A
-
-	if !f.From.IsZero() || !f.To.IsZero() {
+	var rest bson.D
+	upper := f.To
+	if after != nil && (upper.IsZero() || after.Date.Before(upper)) {
+		upper = after.Date
+	}
+	if !f.From.IsZero() || !upper.IsZero() {
 		var date bson.D
 		if !f.From.IsZero() {
 			date = append(date, bson.E{Key: "$gte", Value: f.From.Time()})
 		}
-		if !f.To.IsZero() {
-			date = append(date, bson.E{Key: "$lte", Value: f.To.Time()})
+		if !upper.IsZero() {
+			date = append(date, bson.E{Key: "$lte", Value: upper.Time()})
 		}
-		filter = append(filter, bson.E{Key: "date", Value: date})
-	}
-	if f.AccountID != "" {
-		account, err := objectID(f.AccountID)
-		if err != nil {
-			return nil, err
-		}
-		alternatives = append(alternatives, bson.D{{Key: "$or", Value: bson.A{
-			bson.D{{Key: "account_id", Value: account}},
-			bson.D{{Key: "to_account_id", Value: account}},
-		}}})
+		rest = append(rest, bson.E{Key: "date", Value: date})
 	}
 	if f.CategoryID != "" {
 		category, err := objectID(f.CategoryID)
 		if err != nil {
 			return nil, err
 		}
-		filter = append(filter, bson.E{Key: "category_id", Value: category})
+		rest = append(rest, bson.E{Key: "category_id", Value: category})
 	}
 	if f.Kind != "" {
-		filter = append(filter, bson.E{Key: "kind", Value: string(f.Kind)})
+		rest = append(rest, bson.E{Key: "kind", Value: string(f.Kind)})
 	}
 	if f.Tag != "" {
-		filter = append(filter, bson.E{Key: "tags", Value: f.Tag})
+		rest = append(rest, bson.E{Key: "tags", Value: f.Tag})
 	}
 	if f.Search != "" {
 		// A literal match: the reader's text never acts as a pattern.
-		filter = append(filter, bson.E{Key: "description_search", Value: bson.Regex{Pattern: regexp.QuoteMeta(f.Search)}})
+		rest = append(rest, bson.E{Key: "description_search", Value: bson.Regex{Pattern: regexp.QuoteMeta(f.Search)}})
 	}
 	if after != nil {
 		last, err := objectID(after.ID)
 		if err != nil {
 			return nil, err
 		}
-		day := after.Date.Time()
-		alternatives = append(alternatives, bson.D{{Key: "$or", Value: bson.A{
-			bson.D{{Key: "date", Value: bson.D{{Key: "$lt", Value: day}}}},
-			bson.D{{Key: "date", Value: day}, {Key: "_id", Value: bson.D{{Key: "$lt", Value: last}}}},
-		}}})
+		// Within the date bound above: the days before the cursor's, and on
+		// its day the ids before its.
+		rest = append(rest, bson.E{Key: "$or", Value: bson.A{
+			bson.D{{Key: "date", Value: bson.D{{Key: "$lt", Value: after.Date.Time()}}}},
+			bson.D{{Key: "_id", Value: bson.D{{Key: "$lt", Value: last}}}},
+		}})
 	}
-	if len(alternatives) > 0 {
-		filter = append(filter, bson.E{Key: "$and", Value: alternatives})
+
+	// Each leg of a transaction: its account and, on a transfer, its
+	// destination, with the invoice of that leg when f names one.
+	var source, destination bson.D
+	if f.AccountID != "" {
+		account, err := objectID(f.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		source = bson.D{{Key: "account_id", Value: account}}
+		destination = bson.D{{Key: "to_account_id", Value: account}}
 	}
-	return filter, nil
+	if !f.Invoice.IsZero() {
+		source = append(source, bson.E{Key: "invoice_month", Value: f.Invoice.String()})
+		destination = append(destination, bson.E{Key: "to_invoice_month", Value: f.Invoice.String()})
+	}
+	if source == nil {
+		return append(bson.D{{Key: "user_id", Value: uid}}, rest...), nil
+	}
+	return eitherLeg(uid, source, destination, rest), nil
+}
+
+// eitherLeg matches the transactions of uid by their account leg (source)
+// or by their destination leg (destination), each with the conditions of
+// rest. The $or is the root of the filter, with user_id inside each branch,
+// so each branch reads its own index; beside a top-level user_id, MongoDB
+// reads every transaction of the user instead.
+func eitherLeg(uid bson.ObjectID, source, destination, rest bson.D) bson.D {
+	branch := func(leg bson.D) bson.D {
+		b := append(bson.D{{Key: "user_id", Value: uid}}, leg...)
+		return append(b, rest...)
+	}
+	return bson.D{{Key: "$or", Value: bson.A{branch(source), branch(destination)}}}
 }
 
 // balanceDoc is the sum of the transactions of one account.
@@ -321,10 +379,7 @@ func (r *Transactions) Balances(ctx context.Context, userID string, accountIDs [
 			return out, nil
 		}
 		in := bson.D{{Key: "$in", Value: ids}}
-		match = append(match, bson.E{Key: "$or", Value: bson.A{
-			bson.D{{Key: "account_id", Value: in}},
-			bson.D{{Key: "to_account_id", Value: in}},
-		}})
+		match = eitherLeg(uid, bson.D{{Key: "account_id", Value: in}}, bson.D{{Key: "to_account_id", Value: in}}, nil)
 		legMatch = bson.D{{Key: "legs.account", Value: in}}
 	}
 	// Each transaction moves its account (income in, expenses and transfers
@@ -367,6 +422,82 @@ func (r *Transactions) Balances(ctx context.Context, userID string, accountIDs [
 	return out, nil
 }
 
+// invoiceSumsDoc is the sum of one invoice of a card.
+type invoiceSumsDoc struct {
+	Month    string `bson:"_id"`
+	Charges  int64  `bson:"charges"`
+	Credits  int64  `bson:"credits"`
+	Payments int64  `bson:"payments"`
+}
+
+// InvoiceSums sums the transactions of card accountID of userID by invoice,
+// for every invoice up to through (included), oldest first: the charges
+// (expenses and transfers out), the credits (income) and the payments
+// (what transfers to the card brought). An invoice without transactions is
+// missing.
+func (r *Transactions) InvoiceSums(ctx context.Context, userID, accountID string, through domain.Month) ([]domain.InvoiceSums, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return []domain.InvoiceSums{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	card, err := objectID(accountID)
+	if err != nil {
+		return []domain.InvoiceSums{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	upTo := bson.D{{Key: "$lte", Value: through.String()}}
+	income := bson.D{{Key: "$eq", Value: bson.A{"$kind", string(domain.TransactionIncome)}}}
+	// legOf is the invoice of a leg when that leg is the card, and null
+	// otherwise.
+	legOf := func(account, invoice string) bson.D {
+		return bson.D{{Key: "$cond", Value: bson.A{
+			bson.D{{Key: "$eq", Value: bson.A{account, card}}}, invoice, nil,
+		}}}
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: eitherLeg(uid,
+			bson.D{{Key: "account_id", Value: card}, {Key: "invoice_month", Value: upTo}},
+			bson.D{{Key: "to_account_id", Value: card}, {Key: "to_invoice_month", Value: upTo}}, nil)}},
+		{{Key: "$project", Value: bson.D{{Key: "legs", Value: bson.A{
+			bson.D{
+				{Key: "month", Value: legOf("$account_id", "$invoice_month")},
+				{Key: "charge", Value: bson.D{{Key: "$cond", Value: bson.A{income, 0, "$amount"}}}},
+				{Key: "credit", Value: bson.D{{Key: "$cond", Value: bson.A{income, "$amount", 0}}}},
+				{Key: "payment", Value: 0},
+			},
+			bson.D{
+				{Key: "month", Value: legOf("$to_account_id", "$to_invoice_month")},
+				{Key: "charge", Value: 0},
+				{Key: "credit", Value: 0},
+				{Key: "payment", Value: "$to_amount"},
+			},
+		}}}}},
+		{{Key: "$unwind", Value: "$legs"}},
+		// Only the legs on the card, within the invoices asked for: a month
+		// compares as a string, so a null one never matches.
+		{{Key: "$match", Value: bson.D{{Key: "legs.month", Value: upTo}}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "$legs.month"},
+			{Key: "charges", Value: bson.D{{Key: "$sum", Value: "$legs.charge"}}},
+			{Key: "credits", Value: bson.D{{Key: "$sum", Value: "$legs.credit"}}},
+			{Key: "payments", Value: bson.D{{Key: "$sum", Value: "$legs.payment"}}},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
+	}
+	cur, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("sum invoices: %w", err)
+	}
+	var docs []invoiceSumsDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode invoices: %w", err)
+	}
+	out := make([]domain.InvoiceSums, len(docs))
+	for i, d := range docs {
+		out[i] = domain.InvoiceSums{Month: storedMonth(d.Month), Charges: d.Charges, Credits: d.Credits, Payments: d.Payments}
+	}
+	return out, nil
+}
+
 // AccountInUse reports whether account id of userID has transactions, as
 // their account or as the destination of a transfer.
 func (r *Transactions) AccountInUse(ctx context.Context, userID, id string) (bool, error) {
@@ -378,10 +509,7 @@ func (r *Transactions) AccountInUse(ctx context.Context, userID, id string) (boo
 	if err != nil {
 		return false, nil //nolint:nilerr // an id that cannot exist owns nothing
 	}
-	return r.exists(ctx, bson.D{{Key: "user_id", Value: uid}, {Key: "$or", Value: bson.A{
-		bson.D{{Key: "account_id", Value: account}},
-		bson.D{{Key: "to_account_id", Value: account}},
-	}}})
+	return r.exists(ctx, eitherLeg(uid, bson.D{{Key: "account_id", Value: account}}, bson.D{{Key: "to_account_id", Value: account}}, nil))
 }
 
 // CategoryInUse reports whether category id of userID has transactions.

@@ -137,6 +137,10 @@ func newFixture() fixture {
 			"wallet":  {ID: "wallet", UserID: "u1", Currency: "BRL"},
 			"dollars": {ID: "dollars", UserID: "u1", Currency: "USD"},
 			"bobs":    {ID: "bobs", UserID: "u2", Currency: "BRL"},
+			"card": {
+				ID: "card", UserID: "u1", Type: domain.AccountCreditCard, Currency: "BRL",
+				Card: &domain.CardSettings{ClosingDay: 25, DueDay: 5},
+			},
 		},
 		categories: map[string]domain.Category{
 			"food":   {ID: "food", UserID: "u1", Kind: domain.CategoryExpense},
@@ -293,6 +297,60 @@ func TestUpdateLooksUpOnlyWhatMoves(t *testing.T) {
 	assert.ErrorContains(t, err, "find account: timeout")
 	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{CategoryID: ptr("food")})
 	assert.ErrorContains(t, err, "find category: timeout")
+}
+
+func TestUpdateLooksUpTheCardOfAnInvoice(t *testing.T) {
+	f := newFixture()
+	ctx := context.Background()
+	in := expense()
+	in.AccountID, in.Date = "card", "2026-11-24"
+	purchase, err := f.svc.Create(ctx, "u1", in)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-12", purchase.InvoiceMonth.String(), "the invoice of the day")
+
+	f.refs.lookups = nil
+	_, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Description: ptr("lunch"), Date: ptr("2026-11-24")})
+	require.NoError(t, err)
+	assert.Empty(t, f.refs.lookups, "the same day needs no settings")
+
+	got, err := f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Date: ptr("2026-11-26")})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"account:card"}, f.refs.lookups, "a new day on a card needs its settings")
+	assert.Equal(t, "2027-01", got.InvoiceMonth.String())
+
+	f.refs.lookups = nil
+	got, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{InvoiceMonth: ptr("2027-02")})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"account:card"}, f.refs.lookups)
+	assert.Equal(t, "2027-02", got.InvoiceMonth.String())
+	assert.Equal(t, got, f.store.txs[purchase.ID])
+
+	plain, err := f.svc.Create(ctx, "u1", expense())
+	require.NoError(t, err)
+	f.refs.lookups = nil
+	_, err = f.svc.Update(ctx, "u1", plain.ID, domain.TransactionPatch{Date: ptr("2026-11-01")})
+	require.NoError(t, err)
+	assert.Empty(t, f.refs.lookups, "a leg off a card has no invoice to pick")
+	_, err = f.svc.Update(ctx, "u1", plain.ID, domain.TransactionPatch{InvoiceMonth: ptr("2026-12")})
+	assert.Equal(t, map[string]string{"invoiceMonth": domain.CodeInvalid}, fields(t, err))
+	assert.Equal(t, []string{"account:bank"}, f.refs.lookups, "a named invoice needs the account")
+
+	payment, err := f.svc.Create(ctx, "u1", domain.TransactionInput{
+		Kind: "transfer", AccountID: "bank", ToAccountID: "card", Amount: 5000, Date: "2026-12-05",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "2026-12", payment.ToInvoiceMonth.String())
+	f.refs.lookups = nil
+	got, err = f.svc.Update(ctx, "u1", payment.ID, domain.TransactionPatch{Date: ptr("2026-12-26")})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"account:card"}, f.refs.lookups, "only the card leg")
+	assert.Equal(t, "2027-01", got.ToInvoiceMonth.String())
+
+	f.refs.err = errors.New("timeout")
+	_, err = f.svc.Update(ctx, "u1", purchase.ID, domain.TransactionPatch{Date: ptr("2026-11-01")})
+	assert.ErrorContains(t, err, "find account: timeout")
+	_, err = f.svc.Update(ctx, "u1", payment.ID, domain.TransactionPatch{ToInvoiceMonth: ptr("2026-12")})
+	assert.ErrorContains(t, err, "find account: timeout")
 }
 
 func TestGetAndDelete(t *testing.T) {

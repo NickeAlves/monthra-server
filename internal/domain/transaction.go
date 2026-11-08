@@ -81,7 +81,15 @@ type Transaction struct {
 	ToCurrency  string
 	ToAmount    int64
 	Date        Date
-	Description string
+	// InvoiceMonth is the card invoice the transaction belongs to when
+	// AccountID is a credit card (a charge, or a credit for income), and
+	// zero otherwise. It is picked from Date when the transaction is
+	// written, so later changes to the card's settings never move it.
+	InvoiceMonth Month
+	// ToInvoiceMonth is the card invoice a transfer pays when ToAccountID is
+	// a credit card, and zero otherwise.
+	ToInvoiceMonth Month
+	Description    string
 	// Tags are lower case, unique, in the order the owner gave them.
 	Tags      []string
 	Source    Source
@@ -101,10 +109,15 @@ type TransactionInput struct {
 	Amount      int64
 	// ToAmount is required on a transfer between two currencies, and
 	// optional (equal to Amount) between accounts of one currency.
-	ToAmount    *int64
-	Date        string
-	Description string
-	Tags        []string
+	ToAmount *int64
+	Date     string
+	// InvoiceMonth ("YYYY-MM") names the invoice of a transaction on a credit
+	// card, and ToInvoiceMonth the invoice a transfer to a card pays; empty,
+	// the day picks them (InvoiceFor, PaymentInvoice).
+	InvoiceMonth   string
+	ToInvoiceMonth string
+	Description    string
+	Tags           []string
 }
 
 // TransactionRefs are the records a transaction names, as the caller's
@@ -141,27 +154,30 @@ func NewTransaction(userID string, in TransactionInput, refs TransactionRefs, no
 	v.Check("tags", err)
 
 	if kind != "" {
+		dated := !t.Date.IsZero()
 		t.AccountID = in.AccountID
-		refsOK := true
-		if t.Currency, ok = accountRef(&v, "accountId", in.AccountID, refs.Account); !ok {
-			refsOK = false
+		var accountOK, toOK bool
+		t.Currency, accountOK = accountRef(&v, "accountId", in.AccountID, refs.Account)
+		if accountOK && dated {
+			t.InvoiceMonth = legInvoice(&v, "invoiceMonth", refs.Account, t.Date, in.InvoiceMonth, (*CardSettings).InvoiceFor)
 		}
 		t.CategoryID = in.CategoryID
 		categoryRef(&v, kind, in.CategoryID, refs.Category)
 		if kind == TransactionTransfer {
 			t.ToAccountID = in.ToAccountID
-			if t.ToCurrency, ok = accountRef(&v, "toAccountId", in.ToAccountID, refs.ToAccount); !ok {
-				refsOK = false
-			}
-			if refsOK && t.ToAccountID == t.AccountID {
+			t.ToCurrency, toOK = accountRef(&v, "toAccountId", in.ToAccountID, refs.ToAccount)
+			if accountOK && toOK && t.ToAccountID == t.AccountID {
 				v.Add("toAccountId", CodeInvalid)
-				refsOK = false
+				toOK = false
 			}
-			if refsOK {
+			if accountOK && toOK {
 				transferAmount(&v, &t, in.ToAmount, nil)
 			}
+			if toOK && dated {
+				t.ToInvoiceMonth = legInvoice(&v, "toInvoiceMonth", refs.ToAccount, t.Date, in.ToInvoiceMonth, (*CardSettings).PaymentInvoice)
+			}
 		} else {
-			noTransferFields(&v, in.ToAccountID != "", in.ToAmount != nil)
+			noTransferFields(&v, in.ToAccountID != "", in.ToAmount != nil, in.ToInvoiceMonth != "")
 		}
 	}
 	if err := v.Err(); err != nil {
@@ -176,22 +192,30 @@ func NewTransaction(userID string, in TransactionInput, refs TransactionRefs, no
 // TransactionPatch changes some fields of a transaction; nil fields stay as
 // they are. The kind is not a field: it never changes. An empty Description
 // clears it, an empty Tags clears them; Tags replaces the whole list.
+//
+// The invoice of a leg on a credit card is picked again from the day when
+// the patch moves the leg to another account or day, unless the patch names
+// it; an empty InvoiceMonth (or ToInvoiceMonth) picks it from the day again.
 type TransactionPatch struct {
-	AccountID   *string
-	CategoryID  *string
-	ToAccountID *string
-	Amount      *int64
-	ToAmount    *int64
-	Date        *string
-	Description *string
-	Tags        *[]string
+	AccountID      *string
+	CategoryID     *string
+	ToAccountID    *string
+	Amount         *int64
+	ToAmount       *int64
+	Date           *string
+	InvoiceMonth   *string
+	ToInvoiceMonth *string
+	Description    *string
+	Tags           *[]string
 }
 
 // Apply checks the patch and returns current with the changes, whether
 // anything changed (UpdatedAt moves only then), or a *ValidationError
 // naming each invalid field. refs holds the records the patch moves the
 // transaction to; only those are checked, so a transaction of an account
-// archived since can still be corrected.
+// archived since can still be corrected. refs may also hold an unchanged
+// account of the transaction, for the card settings its invoice is picked
+// with; it is not checked either.
 func (p TransactionPatch) Apply(current Transaction, refs TransactionRefs, now time.Time) (Transaction, bool, error) {
 	var v Validation
 	next := current
@@ -201,10 +225,13 @@ func (p TransactionPatch) Apply(current Transaction, refs TransactionRefs, now t
 		v.Check("amount", checkPositiveAmount(*p.Amount))
 		next.Amount = *p.Amount
 	}
+	dated := true
 	if p.Date != nil {
 		next.Date, err = ParseDate(*p.Date)
 		v.Check("date", err)
+		dated = err == nil
 	}
+	redated := dated && !next.Date.Equal(current.Date)
 	if p.Description != nil {
 		next.Description, err = normalizeOptionalText(*p.Description, MaxTransactionDescriptionLength)
 		v.Check("description", err)
@@ -214,35 +241,40 @@ func (p TransactionPatch) Apply(current Transaction, refs TransactionRefs, now t
 		v.Check("tags", err)
 	}
 
-	refsOK := true
-	if p.AccountID != nil && *p.AccountID != current.AccountID {
+	accountOK := true
+	moved := p.AccountID != nil && *p.AccountID != current.AccountID
+	if moved {
 		next.AccountID = *p.AccountID
-		var ok bool
-		if next.Currency, ok = accountRef(&v, "accountId", next.AccountID, refs.Account); !ok {
-			refsOK = false
-		}
+		next.Currency, accountOK = accountRef(&v, "accountId", next.AccountID, refs.Account)
+	}
+	if accountOK && dated {
+		next.InvoiceMonth = patchInvoice(&v, "invoiceMonth", current.InvoiceMonth, moved || redated, p.InvoiceMonth,
+			refs.Account, next.AccountID, next.Date, (*CardSettings).InvoiceFor)
 	}
 	if p.CategoryID != nil && (current.IsTransfer() || *p.CategoryID != current.CategoryID) {
 		next.CategoryID = *p.CategoryID
 		categoryRef(&v, current.Kind, next.CategoryID, refs.Category)
 	}
 	if current.IsTransfer() {
-		if p.ToAccountID != nil && *p.ToAccountID != current.ToAccountID {
+		toOK := true
+		toMoved := p.ToAccountID != nil && *p.ToAccountID != current.ToAccountID
+		if toMoved {
 			next.ToAccountID = *p.ToAccountID
-			var ok bool
-			if next.ToCurrency, ok = accountRef(&v, "toAccountId", next.ToAccountID, refs.ToAccount); !ok {
-				refsOK = false
-			}
+			next.ToCurrency, toOK = accountRef(&v, "toAccountId", next.ToAccountID, refs.ToAccount)
 		}
-		if refsOK && next.ToAccountID == next.AccountID {
+		if accountOK && toOK && next.ToAccountID == next.AccountID {
 			v.Add("toAccountId", CodeInvalid)
-			refsOK = false
+			toOK = false
 		}
-		if refsOK {
+		if accountOK && toOK {
 			transferAmount(&v, &next, p.ToAmount, &current)
 		}
+		if toOK && dated {
+			next.ToInvoiceMonth = patchInvoice(&v, "toInvoiceMonth", current.ToInvoiceMonth, toMoved || redated, p.ToInvoiceMonth,
+				refs.ToAccount, next.ToAccountID, next.Date, (*CardSettings).PaymentInvoice)
+		}
 	} else {
-		noTransferFields(&v, p.ToAccountID != nil, p.ToAmount != nil)
+		noTransferFields(&v, p.ToAccountID != nil, p.ToAmount != nil, p.ToInvoiceMonth != nil)
 	}
 	if err := v.Err(); err != nil {
 		return Transaction{}, false, err
@@ -259,8 +291,8 @@ func (p TransactionPatch) Apply(current Transaction, refs TransactionRefs, now t
 func (t Transaction) equal(o Transaction) bool {
 	return t.AccountID == o.AccountID && t.Currency == o.Currency && t.CategoryID == o.CategoryID &&
 		t.Amount == o.Amount && t.ToAccountID == o.ToAccountID && t.ToCurrency == o.ToCurrency &&
-		t.ToAmount == o.ToAmount && t.Date.Equal(o.Date) && t.Description == o.Description &&
-		slices.Equal(t.Tags, o.Tags)
+		t.ToAmount == o.ToAmount && t.Date.Equal(o.Date) && t.InvoiceMonth == o.InvoiceMonth &&
+		t.ToInvoiceMonth == o.ToInvoiceMonth && t.Description == o.Description && slices.Equal(t.Tags, o.Tags)
 }
 
 // accountRef checks the account named by id in field (acc is what the
@@ -300,13 +332,62 @@ func categoryRef(v *Validation, kind TransactionKind, id string, cat *Category) 
 
 // noTransferFields refuses the destination of a transfer on an expense or
 // an income.
-func noTransferFields(v *Validation, toAccount, toAmount bool) {
+func noTransferFields(v *Validation, toAccount, toAmount, toInvoice bool) {
 	if toAccount {
 		v.Add("toAccountId", CodeInvalid)
 	}
 	if toAmount {
 		v.Add("toAmount", CodeInvalid)
 	}
+	if toInvoice {
+		v.Add("toInvoiceMonth", CodeInvalid)
+	}
+}
+
+// legInvoice returns the invoice of a leg of a transaction on account acc
+// (already checked) on day: none off a credit card; on one, the invoice the
+// owner named (raw, "YYYY-MM"), or else the one pick finds for the day. A
+// named invoice must lie within MaxInvoiceShift months of that one.
+func legInvoice(v *Validation, field string, acc *Account, day Date, raw string, pick func(*CardSettings, Date) Month) Month {
+	if !acc.IsCard() {
+		if raw != "" {
+			v.Add(field, CodeInvalid)
+		}
+		return Month{}
+	}
+	want := pick(acc.Card, day)
+	if raw == "" {
+		return want
+	}
+	m, err := ParseMonth(raw)
+	if err != nil {
+		v.Check(field, err)
+		return Month{}
+	}
+	if shift := m.Sub(want); shift > MaxInvoiceShift || shift < -MaxInvoiceShift {
+		v.Add(field, CodeOutOfRange)
+		return Month{}
+	}
+	return m
+}
+
+// patchInvoice returns the invoice of a leg after a patch: picked again
+// when the leg moved to another account or day or the patch names one (raw),
+// kept as current otherwise. acc is the leg's account as the caller found
+// it; when it was not looked up (nil), the invoice stays, since only card
+// accounts need looking up.
+func patchInvoice(v *Validation, field string, current Month, moved bool, raw *string, acc *Account, accountID string, day Date, pick func(*CardSettings, Date) Month) Month {
+	if !moved && raw == nil {
+		return current
+	}
+	if acc == nil || acc.ID != accountID {
+		return current
+	}
+	var name string
+	if raw != nil {
+		name = *raw
+	}
+	return legInvoice(v, field, acc, day, name, pick)
 }
 
 // transferAmount sets what a transfer adds to its destination. Between
@@ -405,6 +486,9 @@ type TransactionFilter struct {
 	Tag string
 	// Search is text the description contains, as NormalizeSearch returns it.
 	Search string
+	// Invoice is a card invoice: with AccountID, the transactions of that
+	// invoice of the card, the payments to it included.
+	Invoice Month
 }
 
 // TransactionCursor is where a page of transactions ended, in their order:

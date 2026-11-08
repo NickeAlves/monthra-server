@@ -14,46 +14,54 @@ import (
 // CreateTransactionRequest is the body of POST /transactions. Amounts are
 // positive integers in minor units (cents) of each account's currency. The
 // domain checks every field, so missing ones are reported as required
-// there.
+// there. invoiceMonth and toInvoiceMonth ("YYYY-MM") name the card invoice
+// of a leg on a credit card; absent, the day picks it.
 type CreateTransactionRequest struct {
-	Kind        string   `json:"kind"`
-	AccountID   string   `json:"accountId"`
-	CategoryID  string   `json:"categoryId"`
-	ToAccountID string   `json:"toAccountId"`
-	Amount      int64    `json:"amount"`
-	ToAmount    *int64   `json:"toAmount"`
-	Date        string   `json:"date"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags"`
+	Kind           string   `json:"kind"`
+	AccountID      string   `json:"accountId"`
+	CategoryID     string   `json:"categoryId"`
+	ToAccountID    string   `json:"toAccountId"`
+	Amount         int64    `json:"amount"`
+	ToAmount       *int64   `json:"toAmount"`
+	Date           string   `json:"date"`
+	InvoiceMonth   string   `json:"invoiceMonth"`
+	ToInvoiceMonth string   `json:"toInvoiceMonth"`
+	Description    string   `json:"description"`
+	Tags           []string `json:"tags"`
 }
 
 // Input maps the request to the domain input.
 func (r CreateTransactionRequest) Input() domain.TransactionInput {
 	return domain.TransactionInput{
 		Kind: r.Kind, AccountID: r.AccountID, CategoryID: r.CategoryID, ToAccountID: r.ToAccountID,
-		Amount: r.Amount, ToAmount: r.ToAmount, Date: r.Date, Description: r.Description, Tags: r.Tags,
+		Amount: r.Amount, ToAmount: r.ToAmount, Date: r.Date, InvoiceMonth: r.InvoiceMonth,
+		ToInvoiceMonth: r.ToInvoiceMonth, Description: r.Description, Tags: r.Tags,
 	}
 }
 
 // UpdateTransactionRequest is the body of PATCH /transactions/{id}; absent
 // (or null) fields stay as they are. The kind is not a field: it never
-// changes.
+// changes. An empty invoiceMonth (or toInvoiceMonth) picks the invoice from
+// the day again.
 type UpdateTransactionRequest struct {
-	AccountID   *string   `json:"accountId"`
-	CategoryID  *string   `json:"categoryId"`
-	ToAccountID *string   `json:"toAccountId"`
-	Amount      *int64    `json:"amount"`
-	ToAmount    *int64    `json:"toAmount"`
-	Date        *string   `json:"date"`
-	Description *string   `json:"description"`
-	Tags        *[]string `json:"tags"`
+	AccountID      *string   `json:"accountId"`
+	CategoryID     *string   `json:"categoryId"`
+	ToAccountID    *string   `json:"toAccountId"`
+	Amount         *int64    `json:"amount"`
+	ToAmount       *int64    `json:"toAmount"`
+	Date           *string   `json:"date"`
+	InvoiceMonth   *string   `json:"invoiceMonth"`
+	ToInvoiceMonth *string   `json:"toInvoiceMonth"`
+	Description    *string   `json:"description"`
+	Tags           *[]string `json:"tags"`
 }
 
 // Patch maps the request to the domain patch.
 func (r UpdateTransactionRequest) Patch() domain.TransactionPatch {
 	return domain.TransactionPatch{
 		AccountID: r.AccountID, CategoryID: r.CategoryID, ToAccountID: r.ToAccountID,
-		Amount: r.Amount, ToAmount: r.ToAmount, Date: r.Date, Description: r.Description, Tags: r.Tags,
+		Amount: r.Amount, ToAmount: r.ToAmount, Date: r.Date, InvoiceMonth: r.InvoiceMonth,
+		ToInvoiceMonth: r.ToInvoiceMonth, Description: r.Description, Tags: r.Tags,
 	}
 }
 
@@ -71,12 +79,16 @@ type Transaction struct {
 	Amount      int64   `json:"amount"`
 	ToAmount    *int64  `json:"toAmount"`
 	// Date is the civil day, "YYYY-MM-DD".
-	Date        string    `json:"date"`
-	Description string    `json:"description"`
-	Tags        []string  `json:"tags"`
-	Source      string    `json:"source"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	Date string `json:"date"`
+	// InvoiceMonth ("YYYY-MM") is the card invoice of the account leg, and
+	// ToInvoiceMonth the one a transfer pays; null off a credit card.
+	InvoiceMonth   *string   `json:"invoiceMonth"`
+	ToInvoiceMonth *string   `json:"toInvoiceMonth"`
+	Description    string    `json:"description"`
+	Tags           []string  `json:"tags"`
+	Source         string    `json:"source"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // NewTransaction maps a transaction to its public view; the owner id stays out.
@@ -95,7 +107,17 @@ func NewTransaction(t domain.Transaction) Transaction {
 	if t.IsTransfer() {
 		out.ToAccountID, out.ToCurrency, out.ToAmount = &t.ToAccountID, &t.ToCurrency, &t.ToAmount
 	}
+	out.InvoiceMonth, out.ToInvoiceMonth = optionalMonth(t.InvoiceMonth), optionalMonth(t.ToInvoiceMonth)
 	return out
+}
+
+// optionalMonth writes a month, or null for none.
+func optionalMonth(m domain.Month) *string {
+	if m.IsZero() {
+		return nil
+	}
+	s := m.String()
+	return &s
 }
 
 // TransactionsResponse is the body of GET /transactions: one page, and the
@@ -160,6 +182,14 @@ func ParseTransactionQuery(q url.Values) (TransactionQuery, error) {
 	if raw := q.Get("q"); raw != "" {
 		out.Filter.Search, err = domain.NormalizeSearch(raw)
 		v.Check("q", err)
+	}
+	if raw := q.Get("invoice"); raw != "" {
+		out.Filter.Invoice, err = domain.ParseMonth(raw)
+		v.Check("invoice", err)
+		// An invoice belongs to one card.
+		if out.Filter.AccountID == "" {
+			v.Add("accountId", domain.CodeRequired)
+		}
 	}
 	if raw := q.Get("limit"); raw != "" {
 		out.Limit, err = strconv.Atoi(raw)
