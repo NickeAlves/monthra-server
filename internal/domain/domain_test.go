@@ -158,3 +158,54 @@ func TestMFAState(t *testing.T) {
 	u.MFA = MFA{Secret: "e1:x", EnabledAt: &now}
 	assert.True(t, u.MFAEnabled())
 }
+
+func TestParseThemeAndCurrency(t *testing.T) {
+	for _, th := range []string{"system", "light", "dark"} {
+		got, ok := ParseTheme(th)
+		assert.True(t, ok, th)
+		assert.Equal(t, Theme(th), got)
+	}
+	for _, bad := range []string{"", "Dark", "sepia", " light"} {
+		_, ok := ParseTheme(bad)
+		assert.False(t, ok, bad)
+	}
+	for _, c := range []string{"BRL", "USD", "EUR"} {
+		got, ok := ParseCurrency(c)
+		assert.True(t, ok, c)
+		assert.Equal(t, c, got)
+	}
+	for _, bad := range []string{"", "brl", "GBP", "BRL "} {
+		_, ok := ParseCurrency(bad)
+		assert.False(t, ok, bad)
+	}
+}
+
+func TestPreferencesPatch(t *testing.T) {
+	current := DefaultPreferences(i18n.PtBR)
+
+	assert.True(t, PreferencesPatch{}.Empty())
+	same, err := PreferencesPatch{}.Apply(current)
+	require.NoError(t, err)
+	assert.Equal(t, current, same)
+
+	patch := PreferencesPatch{Locale: ptr("en-US"), Theme: ptr("dark")}
+	assert.False(t, patch.Empty())
+	next, err := patch.Apply(current)
+	require.NoError(t, err)
+	assert.Equal(t, Preferences{Locale: i18n.EnUS, Theme: ThemeDark, Currency: CurrencyBRL}, next)
+
+	next, err = PreferencesPatch{Currency: ptr("EUR")}.Apply(next)
+	require.NoError(t, err)
+	assert.Equal(t, Preferences{Locale: i18n.EnUS, Theme: ThemeDark, Currency: CurrencyEUR}, next)
+
+	_, err = PreferencesPatch{Locale: ptr("fr-FR"), Theme: ptr("sepia"), Currency: ptr("GBP")}.Apply(current)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, []FieldError{{"locale", CodeInvalid}, {"theme", CodeInvalid}, {"currency", CodeInvalid}}, ve.Fields)
+
+	_, err = PreferencesPatch{Locale: ptr("en-US"), Theme: ptr("")}.Apply(current)
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, []FieldError{{"theme", CodeInvalid}}, ve.Fields, "one bad field rejects the whole patch")
+}
+
+func ptr[T any](v T) *T { return &v }
