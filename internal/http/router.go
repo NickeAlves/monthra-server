@@ -23,8 +23,17 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/ratelimit"
 )
 
-// PolicyAPIByIP is the baseline budget of every /api/v1 request, by client IP.
-const PolicyAPIByIP = "api_ip"
+// Rate limit policy names, used in Redis keys and metric labels.
+const (
+	// PolicyAPIByIP is the baseline budget of every /api/v1 request, by client IP.
+	PolicyAPIByIP = "api_ip"
+	// PolicyAuthByIP covers register, login and email verification, by client IP.
+	PolicyAuthByIP = "auth_ip"
+	// PolicyRefreshByIP covers token refreshes, by client IP.
+	PolicyRefreshByIP = "refresh_ip"
+	// PolicyAPIByUser is the budget of authenticated requests, by user.
+	PolicyAPIByUser = "api_user"
+)
 
 // RouterOptions holds what the router needs from the rest of the app.
 type RouterOptions struct {
@@ -49,6 +58,15 @@ type RouterOptions struct {
 	Keys    cache.Keys
 	// APIRateByIP is the baseline budget of /api/v1 per client IP.
 	APIRateByIP config.Rate
+
+	// Auth serves /api/v1/auth/*. Nil leaves those routes out.
+	Auth          *handler.Auth
+	Authenticator middleware.AuthOptions
+	// AuthRateByIP, RefreshRateByIP and APIRateByUser are the budgets of the
+	// credential endpoints, of refreshes and of authenticated requests.
+	AuthRateByIP    config.Rate
+	RefreshRateByIP config.Rate
+	APIRateByUser   config.Rate
 }
 
 // NewRouter builds the public API handler.
@@ -102,7 +120,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}),
 		)
 		api.Method(http.MethodGet, "/auth/csrf", handler.CSRFToken{Signer: opts.CSRFSigner, Cookies: opts.Cookies})
-		// Feature routes (auth, accounts, transactions, ...) are mounted here.
+		if opts.Auth != nil {
+			mountAuth(api, opts)
+		}
+		// Feature routes (accounts, transactions, ...) are mounted on the
+		// authenticated group of mountAuth.
 		api.NotFound(func(w http.ResponseWriter, r *http.Request) {
 			problem.Write(w, r, http.StatusNotFound, i18n.ErrNotFound)
 		})
@@ -115,6 +137,37 @@ func NewRouter(opts RouterOptions) http.Handler {
 			return r.URL.Path != "/healthz" && r.URL.Path != "/readyz"
 		}),
 	)
+}
+
+// mountAuth adds the auth routes. Credential endpoints fail closed when
+// Redis is down: their budgets are what stops password guessing.
+func mountAuth(api chi.Router, opts RouterOptions) {
+	limit := func(name string, rate config.Rate, subject func(*http.Request) string, failOpen bool) func(http.Handler) http.Handler {
+		return middleware.RateLimit(middleware.RateLimitOptions{
+			Limiter: opts.Limiter,
+			Keys:    opts.Keys,
+			Policy:  ratelimit.Policy{Name: name, Rate: rate, FailOpen: failOpen},
+			Subject: subject,
+			Logger:  opts.Logger,
+			Metrics: opts.Metrics,
+		})
+	}
+	api.Group(func(r chi.Router) {
+		r.Use(limit(PolicyAuthByIP, opts.AuthRateByIP, middleware.ByClientIP, false))
+		r.Post("/auth/register", opts.Auth.Register)
+		r.Post("/auth/verify-email", opts.Auth.VerifyEmail)
+		r.Post("/auth/verify-email/resend", opts.Auth.ResendVerification)
+		r.Post("/auth/login", opts.Auth.Login)
+	})
+	api.With(limit(PolicyRefreshByIP, opts.RefreshRateByIP, middleware.ByClientIP, false)).
+		Post("/auth/refresh", opts.Auth.Refresh)
+	api.Group(func(r chi.Router) {
+		r.Use(
+			middleware.Authenticate(opts.Authenticator),
+			limit(PolicyAPIByUser, opts.APIRateByUser, middleware.ByUser, true),
+		)
+		r.Post("/auth/logout", opts.Auth.Logout)
+	})
 }
 
 func serveOpenAPI(w http.ResponseWriter, _ *http.Request) {

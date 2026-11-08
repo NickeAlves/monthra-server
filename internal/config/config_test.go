@@ -18,6 +18,10 @@ func setRequired(t *testing.T) {
 	t.Setenv("MONGO_URI", "mongodb://localhost:27017")
 	t.Setenv("REDIS_ADDR", "localhost:6379")
 	t.Setenv("CSRF_SECRET", testSecret)
+	t.Setenv("JWT_SIGNING_KEYS", "k1:"+testSecret)
+	t.Setenv("JWT_ACTIVE_KID", "k1")
+	t.Setenv("SMTP_HOST", "mailpit")
+	t.Setenv("SMTP_FROM", "Monthra <no-reply@monthra.example>")
 }
 
 // testSecret is built at run time so no key-looking literal enters git.
@@ -41,6 +45,97 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Empty(t, cfg.Security.TrustedProxies)
 	assert.GreaterOrEqual(t, len(cfg.Security.CSRFSecret), 32)
 	assert.Equal(t, Rate{Limit: 300, Period: time.Minute}, cfg.RateLimits.APIPerIP)
+	assert.Equal(t, Rate{Limit: 100, Period: time.Minute}, cfg.RateLimits.APIPerUser)
+	assert.Equal(t, Rate{Limit: 5, Period: time.Minute}, cfg.RateLimits.AuthPerIP)
+	assert.Equal(t, Rate{Limit: 5, Period: time.Minute}, cfg.RateLimits.AuthPerEmail)
+	assert.Equal(t, Rate{Limit: 30, Period: time.Minute}, cfg.RateLimits.RefreshPerIP)
+
+	assert.Equal(t, []string{"k1"}, cfg.Auth.SigningKeys.KIDs())
+	assert.Equal(t, "k1", cfg.Auth.ActiveKID)
+	assert.Equal(t, 15*time.Minute, cfg.Auth.AccessTokenTTL)
+	assert.Equal(t, 30*24*time.Hour, cfg.Auth.RefreshTokenTTL)
+	assert.Equal(t, 30*time.Minute, cfg.Auth.EmailTokenTTL)
+	assert.Equal(t, 10*time.Second, cfg.Auth.RefreshReuseGrace)
+	assert.Equal(t, 4, cfg.Auth.PasswordHashConcurrency)
+	assert.True(t, cfg.Auth.HIBPEnabled)
+	assert.Equal(t, PublicURL("http://localhost:3000"), cfg.Auth.AppPublicURL)
+	assert.Equal(t, "monthra-server:local", cfg.Issuer())
+
+	assert.Equal(t, 587, cfg.SMTP.Port)
+	assert.Equal(t, SMTPTLSStartTLS, cfg.SMTP.TLS)
+	assert.Equal(t, 10*time.Second, cfg.SMTP.Timeout)
+	assert.False(t, cfg.Captcha.Enabled())
+}
+
+func TestLoadParsesAuthSettings(t *testing.T) {
+	setRequired(t)
+	second := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x07}, 32))
+	t.Setenv("JWT_SIGNING_KEYS", " k1:"+testSecret+" , k2026-11:"+second)
+	t.Setenv("JWT_ACTIVE_KID", "k2026-11")
+	t.Setenv("APP_PUBLIC_URL", "https://app.monthra.example/")
+	t.Setenv("SMTP_TLS", "TLS")
+	t.Setenv("TURNSTILE_SECRET", rand.Text())
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"k1", "k2026-11"}, cfg.Auth.SigningKeys.KIDs())
+	key, ok := cfg.Auth.SigningKeys.Key("k2026-11")
+	require.True(t, ok)
+	assert.Equal(t, bytes.Repeat([]byte{0x07}, 32), key)
+	_, ok = cfg.Auth.SigningKeys.Key("missing")
+	assert.False(t, ok)
+	assert.Equal(t, PublicURL("https://app.monthra.example"), cfg.Auth.AppPublicURL)
+	assert.Equal(t, "https://app.monthra.example/verify-email", cfg.Auth.AppPublicURL.Join("/verify-email"))
+	assert.Equal(t, SMTPTLSImplicit, cfg.SMTP.TLS)
+	assert.True(t, cfg.Captcha.Enabled())
+}
+
+func TestLoadRejectsBadAuthSettings(t *testing.T) {
+	for name, tc := range map[string]struct{ key, value, wantErr string }{
+		"key ring without kid":   {"JWT_SIGNING_KEYS", testSecret, "want kid:base64"},
+		"key ring bad kid":       {"JWT_SIGNING_KEYS", "k 1:" + testSecret, "invalid key id"},
+		"key ring duplicate kid": {"JWT_SIGNING_KEYS", "k1:" + testSecret + ",k1:" + testSecret, "duplicate key id"},
+		"key ring not base64":    {"JWT_SIGNING_KEYS", "k1:not base64!", "must be base64"},
+		"key ring empty entries": {"JWT_SIGNING_KEYS", " , ", "key ring is empty"},
+		"short ed25519 seed":     {"JWT_SIGNING_KEYS", "k1:c2hvcnQ=", "must decode to 32 bytes"},
+		"unknown active kid":     {"JWT_ACTIVE_KID", "k9", `JWT_ACTIVE_KID "k9" is not in JWT_SIGNING_KEYS`},
+		"access ttl too long":    {"ACCESS_TOKEN_TTL", "1h", "ACCESS_TOKEN_TTL must be between"},
+		"refresh ttl too short":  {"REFRESH_TOKEN_TTL", "10m", "REFRESH_TOKEN_TTL must be between"},
+		"email ttl too long":     {"EMAIL_TOKEN_TTL", "48h", "EMAIL_TOKEN_TTL must be between"},
+		"refresh grace too long": {"REFRESH_REUSE_GRACE", "5m", "REFRESH_REUSE_GRACE must be between"},
+		"no hash concurrency":    {"PASSWORD_HASH_CONCURRENCY", "0", "PASSWORD_HASH_CONCURRENCY"},
+		"relative public url":    {"APP_PUBLIC_URL", "/app", "invalid APP_PUBLIC_URL"},
+		"public url with query":  {"APP_PUBLIC_URL", "https://app.example/?a=1", "invalid APP_PUBLIC_URL"},
+		"bad smtp tls":           {"SMTP_TLS", "ssl", "invalid SMTP_TLS"},
+		"bad smtp port":          {"SMTP_PORT", "70000", "SMTP_PORT must be between"},
+		"bad smtp from":          {"SMTP_FROM", "not an address", "SMTP_FROM is not a valid address"},
+		"smtp host missing":      {"SMTP_HOST", "", "SMTP_HOST"},
+		"smtp user without pass": {"SMTP_USERNAME", "relay", "SMTP_PASSWORD is required"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(tc.key, tc.value)
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestKeyRingAndRedactedNeverPrintSecrets(t *testing.T) {
+	var ring KeyRing
+	require.NoError(t, ring.UnmarshalText([]byte("k1:"+testSecret)))
+	for _, out := range []string{ring.String(), fmt.Sprintf("%v", ring), fmt.Sprintf("%#v", ring), fmt.Sprintf("%+v", Auth{SigningKeys: ring})} {
+		assert.NotContains(t, out, testSecret)
+	}
+	assert.Equal(t, "KeyRing[k1]", ring.String())
+
+	value := rand.Text()
+	r := Redacted(value)
+	assert.Equal(t, "[redacted]", r.String())
+	assert.NotContains(t, fmt.Sprintf("%v %#v %+v", r, r, SMTP{Password: r}), value)
+	assert.Equal(t, value, r.Reveal())
+	assert.Empty(t, Redacted("").String())
 }
 
 func TestLoadParsesSecuritySettings(t *testing.T) {
@@ -170,6 +265,7 @@ func TestValidate(t *testing.T) {
 				c.AppEnv = EnvProduction
 				c.Redis.Password = rand.Text()
 				c.Security.AllowedOrigins = []Origin{"https://app.monthra.example"}
+				c.Auth.AppPublicURL = "https://app.monthra.example"
 			},
 		},
 		"origins required outside local": {
@@ -197,6 +293,43 @@ func TestValidate(t *testing.T) {
 		"body limit must be positive": {
 			mutate:  func(c *Config) { c.HTTP.MaxBodyBytes = 0 },
 			wantErr: "HTTP_MAX_BODY_BYTES",
+		},
+		"public url must use https outside local": {
+			mutate:  func(c *Config) { c.AppEnv = EnvStaging },
+			wantErr: "APP_PUBLIC_URL must use https in staging",
+		},
+		"clear text smtp is fine locally": {
+			mutate: func(c *Config) { c.SMTP.TLS = SMTPTLSNone },
+		},
+		"clear text smtp in staging needs the opt-in": {
+			mutate:  func(c *Config) { c.AppEnv = EnvStaging; c.SMTP.TLS = SMTPTLSNone },
+			wantErr: "SMTP_TLS=none in staging requires SMTP_ALLOW_INSECURE=true",
+		},
+		"clear text smtp in staging with the opt-in": {
+			mutate: func(c *Config) {
+				c.AppEnv = EnvStaging
+				c.Redis.Password = rand.Text()
+				c.Security.AllowedOrigins = []Origin{"https://localhost"}
+				c.Auth.AppPublicURL = "https://localhost"
+				c.SMTP.TLS = SMTPTLSNone
+				c.SMTP.AllowInsecure = true
+			},
+		},
+		"clear text smtp never in production": {
+			mutate:  func(c *Config) { c.AppEnv = EnvProduction; c.SMTP.TLS = SMTPTLSNone; c.SMTP.AllowInsecure = true },
+			wantErr: "SMTP_TLS=none is not allowed in production",
+		},
+		"insecure opt-in never in production": {
+			mutate:  func(c *Config) { c.AppEnv = EnvProduction; c.SMTP.AllowInsecure = true },
+			wantErr: "SMTP_ALLOW_INSECURE must not be set in production",
+		},
+		"smtp credentials never in clear text": {
+			mutate: func(c *Config) {
+				c.SMTP.TLS = SMTPTLSNone
+				c.SMTP.Username = "relay"
+				c.SMTP.Password = Redacted(rand.Text())
+			},
+			wantErr: "SMTP_USERNAME requires SMTP_TLS=starttls or tls",
 		},
 	}
 	for name, tc := range tests {

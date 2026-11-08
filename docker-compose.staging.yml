@@ -13,6 +13,14 @@ services:
       LOG_LEVEL: info
       # Staging requires https origins; .env holds the local http ones.
       CORS_ALLOWED_ORIGINS: ${STAGING_CORS_ALLOWED_ORIGINS:-https://localhost}
+      APP_PUBLIC_URL: ${STAGING_APP_PUBLIC_URL:-https://localhost}
+      # Until the email provider is chosen (with the cloud), the local
+      # homologation stack sends to Mailpit. A real staging deployment sets
+      # its SMTP relay through Terraform and never SMTP_ALLOW_INSECURE.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: none
+      SMTP_ALLOW_INSECURE: "true"
     ports: !override
       - "127.0.0.1:8080:8080"
     volumes: !reset []
@@ -30,4 +38,6 @@ services:
     ports: !reset []
 
   mailpit:
-    profiles: [local-only]
+    # Only the UI is published; SMTP stays on the compose network.
+    ports: !override
+      - "127.0.0.1:8025:8025"

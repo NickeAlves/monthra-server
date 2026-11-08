@@ -175,3 +175,137 @@ func (r Rate) String() string {
 	}
 	return strconv.Itoa(r.Limit) + "/" + unit
 }
+
+// KeyRing is a set of named keys, "kid:base64,kid2:base64", so keys can be
+// rotated: new material signs or encrypts under a new kid while the old kids
+// keep verifying or decrypting. It never prints the key material.
+type KeyRing struct {
+	keys map[string][]byte
+	kids []string
+}
+
+// maxKIDLen bounds key ids, which travel in JWT headers and ciphertexts.
+const maxKIDLen = 32
+
+// UnmarshalText parses comma-separated kid:base64 pairs.
+func (k *KeyRing) UnmarshalText(text []byte) error {
+	ring := KeyRing{keys: map[string][]byte{}}
+	for entry := range strings.SplitSeq(string(text), ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		kid, material, ok := strings.Cut(entry, ":")
+		if !ok {
+			return errors.New("invalid key ring entry: want kid:base64 (generate with: make secrets)")
+		}
+		kid = strings.TrimSpace(kid)
+		if !validKID(kid) {
+			return fmt.Errorf("invalid key id %q: use 1 to %d letters, digits, '-' or '_'", kid, maxKIDLen)
+		}
+		if _, dup := ring.keys[kid]; dup {
+			return fmt.Errorf("duplicate key id %q", kid)
+		}
+		var secret Secret
+		if err := secret.UnmarshalText([]byte(material)); err != nil {
+			return fmt.Errorf("key %q: %w", kid, err)
+		}
+		ring.keys[kid] = secret
+		ring.kids = append(ring.kids, kid)
+	}
+	if len(ring.kids) == 0 {
+		return errors.New("the key ring is empty")
+	}
+	*k = ring
+	return nil
+}
+
+func validKID(kid string) bool {
+	if kid == "" || len(kid) > maxKIDLen {
+		return false
+	}
+	for _, c := range kid {
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		if !letter && (c < '0' || c > '9') && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// Key returns a copy of the key material of kid.
+func (k KeyRing) Key(kid string) ([]byte, bool) {
+	b, ok := k.keys[kid]
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), b...), true
+}
+
+// KIDs returns the key ids in configuration order.
+func (k KeyRing) KIDs() []string { return append([]string(nil), k.kids...) }
+
+// String lists the key ids only.
+func (k KeyRing) String() string { return "KeyRing[" + strings.Join(k.kids, ",") + "]" }
+
+// GoString redacts the key material in %#v.
+func (k KeyRing) GoString() string { return "config." + k.String() }
+
+// Redacted is a plain-text secret (a password or an API secret). It never prints its value.
+type Redacted string
+
+// String redacts the value.
+func (r Redacted) String() string {
+	if r == "" {
+		return ""
+	}
+	return "[redacted]"
+}
+
+// GoString redacts the value in %#v.
+func (r Redacted) GoString() string { return "config.Redacted(" + r.String() + ")" }
+
+// Reveal returns the secret value, for the one place that must send it.
+func (r Redacted) Reveal() string { return string(r) }
+
+// SMTPTLS is how the SMTP connection is encrypted.
+type SMTPTLS string
+
+// SMTP encryption modes.
+const (
+	// SMTPTLSNone sends in clear text (local Mailpit only).
+	SMTPTLSNone SMTPTLS = "none"
+	// SMTPTLSStartTLS upgrades a plain connection and fails when the server cannot (port 587).
+	SMTPTLSStartTLS SMTPTLS = "starttls"
+	// SMTPTLSImplicit connects with TLS from the start (port 465).
+	SMTPTLSImplicit SMTPTLS = "tls"
+)
+
+// UnmarshalText accepts none, starttls or tls.
+func (t *SMTPTLS) UnmarshalText(text []byte) error {
+	switch v := SMTPTLS(strings.ToLower(strings.TrimSpace(string(text)))); v {
+	case SMTPTLSNone, SMTPTLSStartTLS, SMTPTLSImplicit:
+		*t = v
+		return nil
+	default:
+		return fmt.Errorf("invalid SMTP_TLS %q: want none, starttls or tls", string(text))
+	}
+}
+
+// PublicURL is the absolute base URL of the web app, without a trailing
+// slash, used to build the links sent by email.
+type PublicURL string
+
+// UnmarshalText accepts an absolute http(s) URL without query or fragment.
+func (p *PublicURL) UnmarshalText(text []byte) error {
+	s := strings.TrimRight(strings.TrimSpace(string(text)), "/")
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("invalid APP_PUBLIC_URL %q: want an absolute http(s) URL without query or fragment", string(text))
+	}
+	*p = PublicURL(s)
+	return nil
+}
+
+// Join appends path (which starts with /) to the base URL.
+func (p PublicURL) Join(path string) string { return string(p) + path }

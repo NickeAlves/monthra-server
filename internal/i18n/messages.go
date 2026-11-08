@@ -17,6 +17,16 @@ const (
 	ErrOriginNotAllowed     Key = "origin_not_allowed"
 	ErrCSRFInvalid          Key = "csrf_invalid"
 	ErrAmbiguousCredentials Key = "ambiguous_credentials"
+
+	ErrUnsupportedMediaType Key = "unsupported_media_type"
+	ErrValidationFailed     Key = "validation_failed"
+	ErrUnauthorized         Key = "unauthorized"
+	ErrInvalidCredentials   Key = "invalid_credentials" //nolint:gosec // G101: an error code, not a credential
+	ErrEmailNotVerified     Key = "email_not_verified"
+	ErrTokenInvalid         Key = "token_invalid"
+	ErrRefreshConflict      Key = "refresh_conflict"
+	ErrCaptchaRequired      Key = "captcha_required"
+	ErrCaptchaInvalid       Key = "captcha_invalid"
 )
 
 // Message is a translated title and detail.
@@ -77,6 +87,51 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Credenciais ambíguas", "Envie o token pelo cabeçalho Authorization ou por cookie, nunca pelos dois."},
 		EsES: {"Credenciales ambiguas", "Envía el token por el encabezado Authorization o por cookie, nunca por ambos."},
 		EnUS: {"Ambiguous credentials", "Send the token in the Authorization header or in a cookie, never both."},
+	},
+	ErrUnsupportedMediaType: {
+		PtBR: {"Tipo de conteúdo não suportado", "Envie o corpo como application/json."},
+		EsES: {"Tipo de contenido no admitido", "Envía el cuerpo como application/json."},
+		EnUS: {"Unsupported media type", "Send the body as application/json."},
+	},
+	ErrValidationFailed: {
+		PtBR: {"Dados inválidos", "Um ou mais campos são inválidos. Veja a lista de erros."},
+		EsES: {"Datos no válidos", "Uno o más campos no son válidos. Consulta la lista de errores."},
+		EnUS: {"Invalid data", "One or more fields are invalid. See the list of errors."},
+	},
+	ErrUnauthorized: {
+		PtBR: {"Não autenticado", "Sua sessão é inválida ou expirou. Entre novamente."},
+		EsES: {"No autenticado", "Tu sesión no es válida o ha caducado. Inicia sesión de nuevo."},
+		EnUS: {"Unauthorized", "Your session is invalid or has expired. Please sign in again."},
+	},
+	ErrInvalidCredentials: {
+		PtBR: {"Credenciais inválidas", "E-mail ou senha incorretos."},
+		EsES: {"Credenciales no válidas", "Correo electrónico o contraseña incorrectos."},
+		EnUS: {"Invalid credentials", "Incorrect email or password."},
+	},
+	ErrEmailNotVerified: {
+		PtBR: {"E-mail não confirmado", "Confirme seu e-mail pelo link que enviamos antes de entrar."},
+		EsES: {"Correo no confirmado", "Confirma tu correo con el enlace que te enviamos antes de iniciar sesión."},
+		EnUS: {"Email not verified", "Confirm your email with the link we sent before signing in."},
+	},
+	ErrTokenInvalid: {
+		PtBR: {"Link inválido ou expirado", "Este link não é mais válido. Peça um novo."},
+		EsES: {"Enlace no válido o caducado", "Este enlace ya no es válido. Solicita uno nuevo."},
+		EnUS: {"Invalid or expired link", "This link is no longer valid. Request a new one."},
+	},
+	ErrRefreshConflict: {
+		PtBR: {"Sessão já renovada", "Outra requisição acabou de renovar a sessão. Repita a requisição original."},
+		EsES: {"Sesión ya renovada", "Otra solicitud acaba de renovar la sesión. Repite la solicitud original."},
+		EnUS: {"Session already renewed", "Another request just renewed the session. Retry the original request."},
+	},
+	ErrCaptchaRequired: {
+		PtBR: {"Verificação necessária", "Confirme que você não é um robô e tente novamente."},
+		EsES: {"Verificación necesaria", "Confirma que no eres un robot e inténtalo de nuevo."},
+		EnUS: {"Verification required", "Confirm that you are not a robot and try again."},
+	},
+	ErrCaptchaInvalid: {
+		PtBR: {"Verificação inválida", "Não foi possível confirmar a verificação. Tente novamente."},
+		EsES: {"Verificación no válida", "No se pudo confirmar la verificación. Inténtalo de nuevo."},
+		EnUS: {"Invalid verification", "The verification could not be confirmed. Please try again."},
 	},
 }
 

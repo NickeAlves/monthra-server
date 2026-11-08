@@ -2,7 +2,7 @@
 
 The Monthra API: personal finance (expenses, income, investments and Open Finance connections) in **Go**, with **MongoDB** and **Redis**.
 
-> Status: service skeleton (config, structured logs, metrics, tracing, health probes, MongoDB indexes, Docker) and the browser-facing protections (CORS, CSRF, rate limiting, client IP behind proxies). Auth and the domain features come next; see the roadmap in [CLAUDE.md](CLAUDE.md) §10.
+> Status: service skeleton (config, structured logs, metrics, tracing, health probes, MongoDB indexes, Docker), browser-facing protections (CORS, CSRF, rate limiting, client IP behind proxies) and authentication (sign-up, email verification, login, refresh rotation, logout). Password recovery, MFA, the profile and the domain features come next; see the roadmap in [CLAUDE.md](CLAUDE.md) §10.
 
 ## Stack
 
@@ -14,7 +14,7 @@ Requirements: Docker (with Compose v2) and, to run outside Docker, Go 1.27 (any 
 
 ```bash
 cp .env.example .env     # then replace every change-me value
-make secrets             # prints random values for the secret variables (CSRF_SECRET, ...)
+make secrets             # prints random values for the secret variables (CSRF_SECRET, JWT keys)
 make up                  # creates the monthra-net network, builds and starts everything
 curl localhost:8080/readyz
 ```
@@ -25,12 +25,12 @@ curl localhost:8080/readyz
 | Metrics | http://localhost:9464/metrics | Internal port, never exposed through the public proxy |
 | MongoDB | localhost:27017 | The API connects with a least-privilege user (`readWrite` on `monthra` only) |
 | Redis | localhost:6379 | Password from `.env` |
-| Mailpit | http://localhost:8025 | Catches every email sent locally |
+| Mailpit | http://localhost:8025 | Catches every email sent locally (SMTP on localhost:1025) |
 | mongo-express | http://localhost:8081 | Only with `docker compose --profile tools up -d`; basic auth from `.env` |
 
 Host ports bind to `127.0.0.1` only. The MongoDB users are created when the `mongo-data` volume is first initialized; after changing the Mongo passwords in `.env`, recreate the volume with `docker compose down -v`.
 
-To run the API on the host instead (Mongo and Redis still in Docker): `make run`.
+To run the API on the host instead (Mongo, Redis and Mailpit still in Docker): `make run`.
 
 ### Make targets
 
@@ -41,7 +41,7 @@ To run the API on the host instead (Mongo and Redis still in Docker): `make run`
 | `make logs` / `make ps` | Follow logs / service status |
 | `make run` | Run the API on the host |
 | `make test` | Unit tests with the race detector |
-| `make test-integration` | Unit + integration tests (testcontainers starts real MongoDB and Redis; needs Docker) |
+| `make test-integration` | Unit + integration tests (testcontainers starts real MongoDB, Redis and Mailpit; needs Docker) |
 | `make cover` | All tests with a cross-package coverage report |
 | `make lint` | gofmt, go vet, golangci-lint (with gosec), govulncheck, gitleaks |
 | `make build` | Build the production image (`ghcr.io/nickealves/monthra-server`) |
@@ -55,7 +55,7 @@ Run `make lint` and `make test` before every commit.
 make staging-up
 ```
 
-This applies `docker-compose.staging.yml` over the base file: the distroless runtime image (non-root, read-only filesystem, `no-new-privileges`), `APP_ENV=staging` (adds HSTS, `Secure` cookies with the `__Host-`/`__Secure-` prefixes and https-only CORS origins, set with `STAGING_CORS_ALLOWED_ORIGINS`), no hot reload, no Mailpit or mongo-express, and MongoDB/Redis with no host ports. TLS terminates at the proxy in `monthra-infra`. The real staging deploy comes from the `staging` branch through `monthra-infra`.
+This applies `docker-compose.staging.yml` over the base file: the distroless runtime image (non-root, read-only filesystem, `no-new-privileges`), `APP_ENV=staging` (adds HSTS, `Secure` cookies with the `__Host-`/`__Secure-` prefixes and https-only CORS origins, set with `STAGING_CORS_ALLOWED_ORIGINS`), no hot reload, no mongo-express, and MongoDB/Redis with no host ports. Emails still go to Mailpit (UI on `localhost:8025`) through `SMTP_ALLOW_INSECURE=true`, until the email provider is chosen together with the cloud. A real staging deploy configures its SMTP relay in Terraform and never sets that flag. TLS terminates at the proxy in `monthra-infra`. The real staging deploy comes from the `staging` branch through `monthra-infra`.
 
 ## Configuration
 
@@ -76,6 +76,23 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 | `HTTP_TRUSTED_PROXIES` | | Proxies (CIDRs or addresses) whose `X-Forwarded-For` is trusted; empty means the TCP peer is the client |
 | `CSRF_SECRET` | (required) | Base64, at least 32 bytes (`make secrets`) |
 | `RATE_LIMIT_API_IP` | `300/m` | Baseline budget of `/api/v1` per client IP (`<n>/s`, `<n>/m`, `<n>/h`) |
+| `RATE_LIMIT_API_USER` | `100/m` | Budget of authenticated requests per user |
+| `RATE_LIMIT_AUTH_IP` / `RATE_LIMIT_AUTH_EMAIL` | `5/m` / `5/m` | Register, login and email verification together, per client IP and per target address |
+| `RATE_LIMIT_REFRESH_IP` | `30/m` | Token refreshes per client IP |
+| `JWT_SIGNING_KEYS` | (required) | Ed25519 seeds as `kid:base64` pairs, comma-separated (`make secrets`) |
+| `JWT_ACTIVE_KID` | (required) | The kid that signs new tokens; the others only verify |
+| `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | `15m` / `720h` | Access: 1 to 15 minutes. Refresh: 1 hour to 90 days |
+| `REFRESH_REUSE_GRACE` | `10s` | A rotated refresh token reused this soon answers 409 instead of revoking the session (0 to 1 minute) |
+| `EMAIL_TOKEN_TTL` | `30m` | Lifetime of verification links (5 to 60 minutes) |
+| `PASSWORD_HASH_CONCURRENCY` | `4` | Parallel Argon2id hashes (64 MiB each) |
+| `HIBP_ENABLED` | `true` | Reject new passwords found in Have I Been Pwned (k-anonymity) |
+| `APP_PUBLIC_URL` | `http://localhost:3000` | Web app base URL used in email links; https outside `local` |
+| `TURNSTILE_SECRET` | | Cloudflare Turnstile secret; empty disables the captcha |
+| `SMTP_HOST`, `SMTP_PORT` | (required), `587` | SMTP relay (Mailpit locally) |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | | Credentials require TLS |
+| `SMTP_FROM` | (required) | `Name <address>` or a bare address |
+| `SMTP_TLS` | `starttls` | `none` (local only), `starttls` or `tls` |
+| `SMTP_ALLOW_INSECURE` | `false` | Allows `SMTP_TLS=none` in staging (local homologation with Mailpit); refused in production |
 | `AUDIT_LOG_TTL` | `8760h` | Audit log retention (TTL index) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Empty disables trace export; the standard `OTEL_*` variables apply |
 
@@ -86,18 +103,35 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 - Every response carries `X-Request-ID` and the security headers (CSP, nosniff, frame denial, referrer and permissions policies, COOP/CORP, `Cache-Control: no-store`; HSTS outside `local`).
 - The OpenAPI document is [docs/openapi.yaml](docs/openapi.yaml), served at `/docs` outside production. Keep it in sync with the code.
 
+## Authentication
+
+The flows and their answers are documented in [docs/openapi.yaml](docs/openapi.yaml). In short:
+
+- **Sign-up** answers `202` whatever the address. A new address gets a verification link and a taken one gets a "someone tried to sign up" email, so the API never tells who has an account. The link puts its token in the URL fragment (`/verify-email#token=…`), so the token stays out of server logs and `Referer` headers. The web app must use Flutter's path URL strategy, so that the fragment stays free for the token.
+- **Passwords:** 10 to 1024 characters with no composition rules, checked against Have I Been Pwned, hashed with Argon2id (m=64 MiB, t=3, p=2). Hashes made with older parameters are upgraded on the next login.
+- **Login** needs a verified email and answers wrong addresses and wrong passwords alike, after the same work. Failures lock the address after 5 tries (and an IP after 20), for 1 minute doubling to 15. With Turnstile on, a captcha is asked after 3 failures, or after 3 sign-ups from one IP within an hour.
+- **Tokens:**
+  - Access tokens are EdDSA JWTs (15 minutes, `kid` for rotation). The `iss` claim is `monthra-server:{env}`, so a staging token is never accepted in production.
+  - Refresh tokens are opaque, stored as SHA-256 in MongoDB (`refresh_tokens`, one chain per session in `sessions`), and rotate on every use. A rotated token presented again within the grace window answers `409` (two tabs refreshing together); later, it revokes the whole session.
+  - Logout and revocations go to a Redis denylist (`monthra:{env}:jwt:deny:{jti}`, `monthra:{env}:session:revoked:{sid}`), checked on every authenticated request. It fails closed.
+- **Delivery:**
+  - Browsers get `HttpOnly`, `Secure`, `SameSite=Strict` cookies and never see a token: `__Host-monthra_at` on `/`, and `__Secure-monthra_rt` on `/api/v1/auth/refresh` (`__Host-` requires `Path=/`).
+  - Native clients get the tokens as JSON and send `Authorization: Bearer`.
+- **Email** goes through any SMTP relay, asynchronously. A bounded queue retries transient failures and drains on shutdown. Templates are translated, and they never include user-chosen text.
+- **Audit:** `register`, `email_verified`, `login_success`, `login_failure`, `logout` and `refresh_reuse_detected` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password or token.
+
 ## Browser security
 
 - **CORS:** only `CORS_ALLOWED_ORIGINS` get CORS headers (with credentials). A preflight from any other origin gets 403.
 - **CSRF** (signed double submit): browsers call `GET /api/v1/auth/csrf` and send the token in `X-CSRF-Token` on every `POST`/`PUT`/`PATCH`/`DELETE`. A request counts as a browser request when it has an `Origin` header or carries auth cookies. Foreign origins are rejected, and so are Bearer tokens sent together with auth cookies. Native clients (Bearer only, no cookies) are exempt.
 - **Same site:** the auth cookies are `SameSite=Strict`, so the web app and the API must share a site (for example `app.example.com` and `api.example.com`).
-- **Rate limits:** GCRA budgets in Redis, shared by every instance. `/api/v1` has a per-IP baseline (IPv6 grouped by /64). Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`, and a spent budget answers 429 with `Retry-After`. The keys are `rate:monthra:{env}:rl:{policy}:{subject}`. The baseline lets requests through when Redis is down; budgets that guard credentials will fail closed.
+- **Rate limits:** GCRA budgets in Redis, shared by every instance. `/api/v1` has a per-IP baseline (IPv6 grouped by /64). Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`, and a spent budget answers 429 with `Retry-After`. The keys are `rate:monthra:{env}:rl:{policy}:{subject}`. The baseline and the per-user budget let requests through when Redis is down; the budgets of the credential endpoints fail closed.
 - **Client IP:** taken from `X-Forwarded-For` only when the TCP peer is in `HTTP_TRUSTED_PROXIES`. The header is read right to left, skipping the trusted proxies.
 
 ## Observability
 
-- Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and (once auth exists) `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
-- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, plus Go and process metrics.
+- Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and, on authenticated requests, `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
+- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, plus Go and process metrics.
 - Traces: HTTP server spans named after the route, MongoDB command spans (operation and collection only, never query values) and Redis spans.
 
 ## Layout
@@ -106,13 +140,19 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 cmd/api/              entrypoint (and the `healthcheck` subcommand for the image)
 internal/app/         wiring, servers and graceful shutdown
 internal/config/      environment configuration
-internal/http/        router, servers, handler/, middleware/, problem/, cookie/
+internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
+internal/domain/      entities and validation rules (no I/O)
+internal/usecase/     use cases on ports (auth/)
+internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, lockout policy
+internal/email/       SMTP sender, async dispatcher, localized templates
+internal/captcha/     Cloudflare Turnstile
+internal/audit/       audit log recorder
 internal/csrf/        signed CSRF tokens
 internal/ratelimit/   Redis GCRA rate limiter
 internal/i18n/        locale matching and translated messages
 internal/observability/  logger, metrics, tracing
-internal/repository/mongo/  MongoDB client and command tracing
-internal/cache/       Redis client and key naming (monthra:{env}:...)
+internal/repository/mongo/  MongoDB client, command tracing and repositories
+internal/cache/       Redis client, key naming (monthra:{env}:...), denylist and lockout
 migrations/           MongoDB indexes, applied at boot
 docs/                 OpenAPI document (embedded in the binary)
 deploy/mongo/         MongoDB init script (least-privilege app user)

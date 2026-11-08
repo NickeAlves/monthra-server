@@ -1,4 +1,5 @@
 # Local environment: API with hot reload, MongoDB, Redis, Mailpit (and mongo-express with --profile tools).
+# Emails sent by the API land in Mailpit: http://localhost:8025
 # Requires the shared network once: make network  (docker network create monthra-net)
 # Values come from .env; `make up` refuses to start while a required one is empty or still change-me.
 name: monthra-server
@@ -26,6 +27,8 @@ services:
       mongo:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
@@ -94,8 +97,10 @@ services:
   mailpit:
     <<: *hardening
     image: axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231
+    # UI on 8025; SMTP on 1025, published for `make run` (API on the host).
     ports:
       - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
     healthcheck:
       test: ["CMD", "/mailpit", "readyz"]
       interval: 10s

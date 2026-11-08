@@ -60,6 +60,30 @@ func Indexes() map[string][]mongo.IndexModel {
 		repo.CollAuditLogs: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("audit_logs_user_created")},
 		},
+		// Session state expires on its own: each document carries its expiry
+		// in expires_at, so these TTL indexes use expireAfterSeconds=0.
+		repo.CollSessions: {
+			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("sessions_user_created")},
+			expiresAt("sessions_ttl"),
+		},
+		repo.CollRefreshTokens: {
+			{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetName("refresh_tokens_hash_unique").SetUnique(true)},
+			{Keys: bson.D{{Key: "session_id", Value: 1}}, Options: options.Index().SetName("refresh_tokens_session")},
+			expiresAt("refresh_tokens_ttl"),
+		},
+		repo.CollAuthTokens: {
+			{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetName("auth_tokens_hash_unique").SetUnique(true)},
+			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "purpose", Value: 1}}, Options: options.Index().SetName("auth_tokens_user_purpose")},
+			expiresAt("auth_tokens_ttl"),
+		},
+	}
+}
+
+// expiresAt is a TTL index that deletes a document once its expires_at passes.
+func expiresAt(name string) mongo.IndexModel {
+	return mongo.IndexModel{
+		Keys:    bson.D{{Key: "expires_at", Value: 1}},
+		Options: options.Index().SetName(name).SetExpireAfterSeconds(0),
 	}
 }
 

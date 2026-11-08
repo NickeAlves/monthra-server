@@ -24,6 +24,9 @@ const (
 	CollInvestments         = "investments"
 	CollInvestmentMovements = "investment_movements"
 	CollAuditLogs           = "audit_logs"
+	CollSessions            = "sessions"
+	CollRefreshTokens       = "refresh_tokens"
+	CollAuthTokens          = "auth_tokens" //nolint:gosec // G101: a collection name, not a credential
 )
 
 // Connect opens a traced client and pings the primary, so the service fails

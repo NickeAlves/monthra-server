@@ -13,7 +13,7 @@ COMPOSE_STG    := docker compose -f docker-compose.yml -f docker-compose.staging
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-17s %s\n", $$1, $$2}'
 
-REQUIRED_ENV := MONGO_URI REDIS_ADDR MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD REDIS_PASSWORD CSRF_SECRET
+REQUIRED_ENV := MONGO_URI REDIS_ADDR MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD REDIS_PASSWORD CSRF_SECRET JWT_SIGNING_KEYS JWT_ACTIVE_KID SMTP_HOST SMTP_FROM
 
 env: ## Fail unless .env exists and every required value is set (cp .env.example .env)
 	@test -f .env || { echo ".env is missing: cp .env.example .env and set the passwords"; exit 1; }
@@ -24,6 +24,9 @@ env: ## Fail unless .env exists and every required value is set (cp .env.example
 
 secrets: ## Print fresh random values for the secret variables of .env (paste them in)
 	@echo "CSRF_SECRET=$$(openssl rand -base64 32)"
+	@kid="k$$(date -u +%Y%m%d)"; \
+	  echo "JWT_SIGNING_KEYS=$$kid:$$(openssl rand -base64 32)"; \
+	  echo "JWT_ACTIVE_KID=$$kid"
 
 network: ## Create the shared Docker network used by every Monthra compose file
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null
@@ -42,9 +45,9 @@ ps: ## Show service status
 	$(COMPOSE) ps
 
 run: env network ## Run the API on the host, with Mongo and Redis from compose
-	$(COMPOSE) up -d --wait mongo redis
+	$(COMPOSE) up -d --wait mongo redis mailpit
 	set -a && . ./.env && set +a && \
-	MONGO_URI="$${MONGO_URI/@mongo:/@localhost:}" REDIS_ADDR=localhost:6379 \
+	MONGO_URI="$${MONGO_URI/@mongo:/@localhost:}" REDIS_ADDR=localhost:6379 SMTP_HOST=localhost \
 	go run -ldflags "-X main.version=$(VERSION)" ./cmd/api
 
 test: ## Unit tests with the race detector
