@@ -15,7 +15,8 @@ import (
 // positive integers in minor units (cents) of each account's currency. The
 // domain checks every field, so missing ones are reported as required
 // there. invoiceMonth and toInvoiceMonth ("YYYY-MM") name the card invoice
-// of a leg on a credit card; absent, the day picks it.
+// of a leg on a credit card; absent, the day picks it. installments (2 to
+// 48, expenses only) splits amount, the total, into monthly installments.
 type CreateTransactionRequest struct {
 	Kind           string   `json:"kind"`
 	AccountID      string   `json:"accountId"`
@@ -28,6 +29,7 @@ type CreateTransactionRequest struct {
 	ToInvoiceMonth string   `json:"toInvoiceMonth"`
 	Description    string   `json:"description"`
 	Tags           []string `json:"tags"`
+	Installments   int      `json:"installments"`
 }
 
 // Input maps the request to the domain input.
@@ -36,6 +38,7 @@ func (r CreateTransactionRequest) Input() domain.TransactionInput {
 		Kind: r.Kind, AccountID: r.AccountID, CategoryID: r.CategoryID, ToAccountID: r.ToAccountID,
 		Amount: r.Amount, ToAmount: r.ToAmount, Date: r.Date, InvoiceMonth: r.InvoiceMonth,
 		ToInvoiceMonth: r.ToInvoiceMonth, Description: r.Description, Tags: r.Tags,
+		Installments: r.Installments,
 	}
 }
 
@@ -82,13 +85,23 @@ type Transaction struct {
 	Date string `json:"date"`
 	// InvoiceMonth ("YYYY-MM") is the card invoice of the account leg, and
 	// ToInvoiceMonth the one a transfer pays; null off a credit card.
-	InvoiceMonth   *string   `json:"invoiceMonth"`
-	ToInvoiceMonth *string   `json:"toInvoiceMonth"`
-	Description    string    `json:"description"`
-	Tags           []string  `json:"tags"`
-	Source         string    `json:"source"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	InvoiceMonth   *string  `json:"invoiceMonth"`
+	ToInvoiceMonth *string  `json:"toInvoiceMonth"`
+	Description    string   `json:"description"`
+	Tags           []string `json:"tags"`
+	// Installment is null outside an installment purchase.
+	Installment *Installment `json:"installment"`
+	Source      string       `json:"source"`
+	CreatedAt   time.Time    `json:"createdAt"`
+	UpdatedAt   time.Time    `json:"updatedAt"`
+}
+
+// Installment places a transaction in an installment purchase: number of
+// count, the purchase being groupId.
+type Installment struct {
+	GroupID string `json:"groupId"`
+	Number  int    `json:"number"`
+	Count   int    `json:"count"`
 }
 
 // NewTransaction maps a transaction to its public view; the owner id stays out.
@@ -108,6 +121,9 @@ func NewTransaction(t domain.Transaction) Transaction {
 		out.ToAccountID, out.ToCurrency, out.ToAmount = &t.ToAccountID, &t.ToCurrency, &t.ToAmount
 	}
 	out.InvoiceMonth, out.ToInvoiceMonth = optionalMonth(t.InvoiceMonth), optionalMonth(t.ToInvoiceMonth)
+	if t.Installment != nil {
+		out.Installment = &Installment{GroupID: t.Installment.GroupID, Number: t.Installment.Number, Count: t.Installment.Count}
+	}
 	return out
 }
 
@@ -191,6 +207,7 @@ func ParseTransactionQuery(q url.Values) (TransactionQuery, error) {
 			v.Add("accountId", domain.CodeRequired)
 		}
 	}
+	out.Filter.InstallmentGroupID = q.Get("installmentGroupId")
 	if raw := q.Get("limit"); raw != "" {
 		out.Limit, err = strconv.Atoi(raw)
 		v.Check("limit", err)
@@ -232,6 +249,18 @@ func DecodeCursor(s string) (*domain.TransactionCursor, error) {
 		return nil, invalid
 	}
 	return &domain.TransactionCursor{Date: date, ID: id}, nil
+}
+
+// ParseEditScope reads the scope of an edit or a deletion (?scope=), "this"
+// when absent, or returns a *domain.ValidationError.
+func ParseEditScope(raw string) (domain.EditScope, error) {
+	scope, err := domain.ParseEditScope(raw)
+	if err != nil {
+		var v domain.Validation
+		v.Check("scope", err)
+		return "", v.Err()
+	}
+	return scope, nil
 }
 
 // ParseAsOf reads the day balances are computed up to ("YYYY-MM-DD", the

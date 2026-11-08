@@ -21,6 +21,18 @@ type Store interface {
 	// List returns up to limit transactions of userID matching f, newest
 	// date first and then newest id, after the cursor when there is one.
 	List(ctx context.Context, userID string, f domain.TransactionFilter, after *domain.TransactionCursor, limit int) ([]domain.Transaction, error)
+
+	// InsertInstallments stores the installments of one purchase under a new
+	// group id and returns them, in order.
+	InsertInstallments(ctx context.Context, ts []domain.Transaction) ([]domain.Transaction, error)
+	// Installments returns the installments of group groupID of userID
+	// numbered from on (1 for all of them), in their order.
+	Installments(ctx context.Context, userID, groupID string, from int) ([]domain.Transaction, error)
+	// UpdateMany stores the editable fields of each of ts, as Update does.
+	UpdateMany(ctx context.Context, ts []domain.Transaction) error
+	// DeleteInstallments removes the installments of group groupID of
+	// userID numbered from on (1 for all of them).
+	DeleteInstallments(ctx context.Context, userID, groupID string, from int) error
 }
 
 // Accounts finds the caller's accounts a transaction names.

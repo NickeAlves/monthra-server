@@ -27,6 +27,7 @@ type fakeTransactions struct {
 	query      transactions.Query
 	input      domain.TransactionInput
 	patch      domain.TransactionPatch
+	scope      domain.EditScope
 	deleted    bool
 }
 
@@ -45,13 +46,13 @@ func (f *fakeTransactions) Get(_ context.Context, userID, id string) (domain.Tra
 	return f.tx, f.err
 }
 
-func (f *fakeTransactions) Update(_ context.Context, userID, id string, p domain.TransactionPatch) (domain.Transaction, error) {
-	f.userID, f.id, f.patch = userID, id, p
+func (f *fakeTransactions) Update(_ context.Context, userID, id string, p domain.TransactionPatch, scope domain.EditScope) (domain.Transaction, error) {
+	f.userID, f.id, f.patch, f.scope = userID, id, p, scope
 	return f.tx, f.err
 }
 
-func (f *fakeTransactions) Delete(_ context.Context, userID, id string) error {
-	f.userID, f.id, f.deleted = userID, id, f.err == nil
+func (f *fakeTransactions) Delete(_ context.Context, userID, id string, scope domain.EditScope) error {
+	f.userID, f.id, f.scope, f.deleted = userID, id, scope, f.err == nil
 	return f.err
 }
 
@@ -98,7 +99,7 @@ func TestCreateTransaction(t *testing.T) {
 		"id": "t1", "kind": "transfer", "accountId": "a1", "currency": "BRL", "categoryId": nil,
 		"toAccountId": "a2", "toCurrency": "USD", "amount": float64(100000), "toAmount": float64(19000),
 		"date": "2026-11-08", "invoiceMonth": nil, "toInvoiceMonth": nil, "description": "Trip money",
-		"tags": []any{"travel"}, "source": "manual", "createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
+		"tags": []any{"travel"}, "installment": nil, "source": "manual", "createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
 	}, jsonOf(t, w), "no owner id and no search field in the answer")
 }
 
@@ -123,6 +124,46 @@ func TestTransactionInvoices(t *testing.T) {
 	assert.Empty(t, *svc.patch.InvoiceMonth, "empty picks the invoice from the day again")
 	require.NotNil(t, svc.patch.ToInvoiceMonth)
 	assert.Equal(t, "2027-02", *svc.patch.ToInvoiceMonth)
+}
+
+func TestTransactionInstallments(t *testing.T) {
+	tx := sampleTransfer(t)
+	tx.Kind, tx.ToAccountID, tx.ToCurrency, tx.ToAmount = domain.TransactionExpense, "", "", 0
+	tx.Installment = &domain.Installment{GroupID: "g1", Number: 1, Count: 12}
+	svc := &fakeTransactions{tx: tx}
+	body := `{"kind":"expense","accountId":"a1","categoryId":"c1","amount":120000,"date":"2026-11-08","installments":12}`
+	w := serveTransactions(svc, request(http.MethodPost, "/transactions", body))
+	require.Equal(t, http.StatusCreated, w.Code)
+	assert.Equal(t, 12, svc.input.Installments)
+	assert.Equal(t, "/api/v1/transactions/t1", w.Header().Get("Location"), "the first installment")
+	assert.Equal(t, map[string]any{"groupId": "g1", "number": float64(1), "count": float64(12)}, jsonOf(t, w)["installment"])
+
+	for query, want := range map[string]domain.EditScope{"": domain.ScopeThis, "?scope=this": domain.ScopeThis, "?scope=future": domain.ScopeFuture, "?scope=all": domain.ScopeAll} {
+		svc := &fakeTransactions{tx: tx}
+		w := serveTransactions(svc, request(http.MethodPatch, "/transactions/t1"+query, `{"description":"Sofa"}`))
+		require.Equal(t, http.StatusOK, w.Code, query)
+		assert.Equal(t, want, svc.scope, query)
+
+		w = serveTransactions(svc, request(http.MethodDelete, "/transactions/t1"+query, ""))
+		require.Equal(t, http.StatusNoContent, w.Code, query)
+		assert.Equal(t, want, svc.scope, query)
+	}
+
+	for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+		svc := &fakeTransactions{tx: tx}
+		w := serveTransactions(svc, request(method, "/transactions/t1?scope=everything", `{"description":"Sofa"}`))
+		require.Equal(t, http.StatusUnprocessableEntity, w.Code, method)
+		errs := problemOf(t, w).Errors
+		require.Len(t, errs, 1)
+		assert.Equal(t, "scope", errs[0].Field)
+		assert.Equal(t, domain.CodeInvalid, errs[0].Code)
+		assert.Empty(t, svc.userID, "%s: the use case is never reached", method)
+	}
+
+	svc = &fakeTransactions{}
+	w = serveTransactions(svc, request(http.MethodGet, "/transactions?installmentGroupId=g1", ""))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "g1", svc.query.Filter.InstallmentGroupID)
 }
 
 func TestTransactionViewOfAnExpense(t *testing.T) {
