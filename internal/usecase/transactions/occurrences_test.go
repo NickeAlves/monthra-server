@@ -130,3 +130,14 @@ func TestDeleteOccurrencesInScope(t *testing.T) {
 	_, err = f.store.ByID(ctx, "u1", other[0].ID)
 	require.NoError(t, err, "nothing deleted before the recurrence ends")
 }
+
+func TestNewServiceDefaults(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newMemStore(), &refs{}, categoryFinder{&refs{}}, Options{})
+	assert.NotNil(t, svc.now())
+	svc.metrics.TransactionCreated("expense")
+	svc.series.Materialize(ctx, "u1", domain.Date{})
+	require.NoError(t, svc.series.Follow(ctx, domain.Transaction{}, domain.Transaction{}))
+	require.NoError(t, svc.series.EndBefore(ctx, domain.Transaction{}))
+	require.NoError(t, svc.series.Remove(ctx, domain.Transaction{}))
+}
