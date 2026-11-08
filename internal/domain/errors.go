@@ -15,6 +15,12 @@ var (
 	// ErrLimitReached means the user already has as many records of a kind
 	// as one account may hold.
 	ErrLimitReached = errors.New("limit reached")
+	// ErrAccountInUse means an account still has transactions, so it can
+	// only be archived.
+	ErrAccountInUse = errors.New("account in use")
+	// ErrCategoryInUse means a category still has transactions; they must
+	// move to another category first.
+	ErrCategoryInUse = errors.New("category in use")
 )
 
 // Field error codes, stable for clients to switch on.
@@ -26,6 +32,12 @@ const (
 	CodeBreached = "breached"
 	// CodeOutOfRange is a number outside its bounds (an amount, a day).
 	CodeOutOfRange = "out_of_range"
+	// CodeArchived is a reference to an archived account, which takes no
+	// new transactions.
+	CodeArchived = "archived"
+	// CodeKindMismatch is a reference to a category of the other kind (an
+	// income category on an expense).
+	CodeKindMismatch = "kind_mismatch"
 )
 
 // FieldError is one invalid input field.
