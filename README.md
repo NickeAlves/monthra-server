@@ -129,7 +129,18 @@ The flows and their answers are documented in [docs/openapi.yaml](docs/openapi.y
   - Wrong codes and wrong step-up passwords count toward the lockout of the address, and the password alone no longer clears it, so knowing the password does not buy unlimited guesses at the code.
   - `mfa/disable` takes the password and a code. Turning MFA on or off emails a notice. These routes answer a wrong password or code with `403`, never `401`.
 - **Email** goes through any SMTP relay, asynchronously. A bounded queue retries transient failures and drains on shutdown. Templates are translated, and they never include user-chosen text.
-- **Audit:** `register`, `email_verified`, `login_success` (with how the last factor was checked), `login_failure`, `logout`, `refresh_reuse_detected`, `password_reset_requested`, `password_reset`, `reauth_failure`, `mfa_setup`, `mfa_enabled`, `mfa_disabled`, `mfa_failure` and `mfa_recovery_code_used` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password, token or code.
+- **Audit:** `register`, `email_verified`, `login_success` (with how the last factor was checked), `login_failure`, `logout`, `refresh_reuse_detected`, `password_reset_requested`, `password_reset`, `reauth_failure`, `mfa_setup`, `mfa_enabled`, `mfa_disabled`, `mfa_failure`, `mfa_recovery_code_used`, `password_changed`, `session_revoked`, `sessions_revoked` and `account_deleted` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password, token or code.
+
+## Profile and account
+
+Every `/api/v1/me` route acts on the caller of the access token; none takes a user id, so one user cannot reach another's account.
+
+- **Profile:** `GET /me` returns the name, address, verification and MFA status (with the recovery codes left) and the preferences, never a hash or secret. `PATCH /me` changes only the display name; any other field is rejected.
+- **Preferences:** `GET`/`PATCH /me/preferences` with `locale` (`pt-BR`, `es-ES`, `en-US`), `theme` (`system`, `light`, `dark`) and `currency` (`BRL`, `USD`, `EUR`). Fields are optional, and one unsupported value rejects the whole change.
+- **Language of the answers:** before sign-in it comes from `Accept-Language`. On authenticated routes the `UserLocale` middleware switches to the stored locale, read from Redis (`monthra:{env}:user:locale:{user_id}`, 1 hour) and filled from MongoDB on a miss. Readers fill with `SET NX` and a preferences change writes with `SET`, so a stale read never replaces a newer value. If both stores fail the request keeps `Accept-Language`: the language guards nothing. Account emails always use the stored locale.
+- **Password change:** `POST /me/password` asks for the current password (wrong ones count toward the lockout and answer `403`), applies the policy and HIBP, signs out every other session, voids pending reset links and emails a notice. The caller's session stays.
+- **Sessions:** `GET /me/sessions` lists up to 100 active sessions (IP, user agent, `current`), the most recently used first. `DELETE /me/sessions/{id}` signs one out; another user's session answers `404` like an unknown one, and repeating the request is safe. `DELETE /me/sessions` signs out all but the current one. Revoking many sessions denies them in Redis before revoking them in MongoDB, so a Redis failure leaves nothing half done and a retry works.
+- **Account deletion (LGPD):** `DELETE /me` takes the password and, with MFA on, a code. It denies every session, runs the registered `UserDataEraser`s in order (feature data first, then the auth stores and the locale cache) and deletes the account last. Each step is idempotent and there is no transaction, so an interrupted deletion leaves an account its owner can sign in to and delete again. The owner gets a confirmation email and the address can sign up again. The audit log is kept until `AUDIT_LOG_TTL`: access records must be retained (Marco Civil art. 15, LGPD art. 16), and they hold no address.
 
 ## Browser security
 
@@ -153,7 +164,7 @@ internal/app/         wiring, servers and graceful shutdown
 internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
-internal/usecase/     use cases on ports (auth/)
+internal/usecase/     use cases on ports (auth/, profile/)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates
@@ -164,7 +175,7 @@ internal/ratelimit/   Redis GCRA rate limiter
 internal/i18n/        locale matching and translated messages
 internal/observability/  logger, metrics, tracing
 internal/repository/mongo/  MongoDB client, command tracing and repositories
-internal/cache/       Redis client, key naming (monthra:{env}:...), denylist, lockout and MFA challenges
+internal/cache/       Redis client, key naming (monthra:{env}:...), denylist, lockout, MFA challenges and the locale cache
 migrations/           MongoDB indexes, applied at boot
 docs/                 OpenAPI document (embedded in the binary)
 deploy/mongo/         MongoDB init script (least-privilege app user)

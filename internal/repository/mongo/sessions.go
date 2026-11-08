@@ -98,20 +98,76 @@ func (r *Sessions) Revoke(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
 
-// RevokeAllForUser ends every active session of userID except the one with
-// id except (empty for none), and returns the ids it revoked so their access
-// tokens can be denied too.
-func (r *Sessions) RevokeAllForUser(ctx context.Context, userID, except string, at time.Time) ([]string, error) {
+// ListActive returns up to limit sessions of userID that can still be
+// refreshed at now, the most recently used first.
+func (r *Sessions) ListActive(ctx context.Context, userID string, now time.Time, limit int) ([]domain.Session, error) {
 	uid, err := objectID(userID)
 	if err != nil {
 		return nil, err
 	}
+	cur, err := r.coll.Find(ctx, activeFor(uid, now),
+		options.Find().
+			SetSort(bson.D{{Key: "last_used_at", Value: -1}, {Key: "_id", Value: -1}}).
+			SetLimit(int64(limit)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find sessions: %w", err)
+	}
+	var docs []sessionDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("read sessions: %w", err)
+	}
+	out := make([]domain.Session, len(docs))
+	for i, d := range docs {
+		out[i] = d.toDomain()
+	}
+	return out, nil
+}
+
+// RevokeForUser ends the session id if it belongs to userID and has not
+// expired at at, and reports whether it did. Revoking it again reports true
+// and keeps the first date, so a retry is safe; another user's session (IDOR),
+// an unknown or expired one reports false.
+func (r *Sessions) RevokeForUser(ctx context.Context, userID, id string, at time.Time) (bool, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return false, nil //nolint:nilerr // an id that cannot exist matches nothing
+	}
+	sid, err := objectID(id)
+	if err != nil {
+		return false, nil //nolint:nilerr // an id that cannot exist matches nothing
+	}
 	at = at.UTC()
-	filter := bson.D{
+	res, err := r.coll.UpdateOne(ctx,
+		bson.D{{Key: "_id", Value: sid}, {Key: "user_id", Value: uid}, {Key: "expires_at", Value: bson.D{{Key: "$gt", Value: at}}}},
+		mongo.Pipeline{{{Key: "$set", Value: bson.D{
+			{Key: "revoked_at", Value: bson.D{{Key: "$ifNull", Value: bson.A{"$revoked_at", at}}}},
+		}}}},
+	)
+	if err != nil {
+		return false, fmt.Errorf("revoke session: %w", err)
+	}
+	return res.MatchedCount == 1, nil
+}
+
+// activeFor matches the sessions of uid that are neither revoked nor expired at now.
+func activeFor(uid bson.ObjectID, now time.Time) bson.D {
+	return bson.D{
 		{Key: "user_id", Value: uid},
 		{Key: "revoked_at", Value: nil},
-		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: at}}},
+		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: now.UTC()}}},
 	}
+}
+
+// ActiveIDs returns the ids of the active sessions of userID but except
+// (empty for none), so their access tokens can be denied before the sessions
+// are revoked.
+func (r *Sessions) ActiveIDs(ctx context.Context, userID, except string, now time.Time) ([]string, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return nil, err
+	}
+	filter := activeFor(uid, now)
 	if except != "" {
 		eid, err := objectID(except)
 		if err != nil {
@@ -129,17 +185,28 @@ func (r *Sessions) RevokeAllForUser(ctx context.Context, userID, except string, 
 	if err := cur.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("read sessions: %w", err)
 	}
-	if len(docs) == 0 {
-		return nil, nil
-	}
-	oids := make(bson.A, len(docs))
 	ids := make([]string, len(docs))
 	for i, d := range docs {
-		oids[i], ids[i] = d.ID, d.ID.Hex()
+		ids[i] = d.ID.Hex()
+	}
+	return ids, nil
+}
+
+// RevokeAllForUser ends every active session of userID except the one with
+// id except (empty for none), and returns the ids it revoked so their access
+// tokens can be denied too.
+func (r *Sessions) RevokeAllForUser(ctx context.Context, userID, except string, at time.Time) ([]string, error) {
+	ids, err := r.ActiveIDs(ctx, userID, except, at)
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	oids := make(bson.A, len(ids))
+	for i, id := range ids {
+		oids[i], _ = bson.ObjectIDFromHex(id)
 	}
 	_, err = r.coll.UpdateMany(ctx,
 		bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: oids}}}, {Key: "revoked_at", Value: nil}},
-		bson.D{{Key: "$set", Value: bson.D{{Key: "revoked_at", Value: at}}}},
+		bson.D{{Key: "$set", Value: bson.D{{Key: "revoked_at", Value: at.UTC()}}}},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("revoke sessions: %w", err)

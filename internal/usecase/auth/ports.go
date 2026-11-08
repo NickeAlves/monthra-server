@@ -1,6 +1,7 @@
 // Package auth implements sign-up, email verification, login, token refresh,
-// logout, password recovery and TOTP two-step verification (§6.1, §6.2) on
-// top of ports, so every rule is unit tested without a database.
+// logout, password recovery, TOTP two-step verification, password change,
+// session management and account deletion (§6.1, §6.2, §6.6) on top of
+// ports, so every rule is unit tested without a database.
 package auth
 
 import (
@@ -33,6 +34,9 @@ type Users interface {
 	UseRecoveryCode(ctx context.Context, id, hash string) (bool, error)
 	ReplaceMFASecret(ctx context.Context, id, oldSealed, newSealed string) (bool, error)
 	DisableMFA(ctx context.Context, id string, at time.Time) (bool, error)
+
+	// Delete removes the account; an account already gone is not an error.
+	Delete(ctx context.Context, id string) error
 }
 
 // Sessions persists signed-in devices.
@@ -41,8 +45,22 @@ type Sessions interface {
 	ByID(ctx context.Context, id string) (domain.Session, error)
 	Touch(ctx context.Context, id string, lastUsed, expiresAt time.Time) error
 	Revoke(ctx context.Context, id string, at time.Time) error
+	// ActiveIDs returns the ids of the active sessions of userID but except.
+	ActiveIDs(ctx context.Context, userID, except string, now time.Time) ([]string, error)
 	// RevokeAllForUser ends every active session but except and returns their ids.
 	RevokeAllForUser(ctx context.Context, userID, except string, at time.Time) ([]string, error)
+	// ListActive returns up to limit active sessions, the most recently used first.
+	ListActive(ctx context.Context, userID string, now time.Time, limit int) ([]domain.Session, error)
+	// RevokeForUser ends a session of userID that has not expired (again is
+	// fine) and reports false for any other session.
+	RevokeForUser(ctx context.Context, userID, id string, at time.Time) (bool, error)
+}
+
+// UserDataEraser deletes everything one feature stores about a user, for
+// account deletion (LGPD). It must be idempotent: an interrupted deletion
+// runs every eraser again.
+type UserDataEraser interface {
+	EraseUserData(ctx context.Context, userID string) error
 }
 
 // RefreshTokens persists each session's rotation chain.
@@ -148,4 +166,8 @@ type Deps struct {
 	Mailer    Mailer
 	Auditor   Auditor
 	Metrics   Metrics
+	// Erasers delete a user's data on account deletion, in order, before the
+	// account itself. Features that store user data register theirs here,
+	// ahead of the auth stores.
+	Erasers []UserDataEraser
 }

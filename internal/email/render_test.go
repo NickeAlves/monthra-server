@@ -22,7 +22,9 @@ func TestCatalogIsComplete(t *testing.T) {
 	all := []Template{
 		TemplateVerifyEmail, TemplateRegisterAttempt, TemplateResetPassword,
 		TemplatePasswordChanged, TemplateMFAEnabled, TemplateMFADisabled,
+		TemplateAccountDeleted,
 	}
+	noAction := map[Template]bool{TemplateAccountDeleted: true}
 	for _, tpl := range all {
 		for _, l := range i18n.Supported {
 			c, ok := catalog[tpl][l]
@@ -30,7 +32,11 @@ func TestCatalogIsComplete(t *testing.T) {
 			assert.NotEmpty(t, c.Subject, "%s %s subject", tpl, l)
 			assert.NotEmpty(t, c.Heading, "%s %s heading", tpl, l)
 			assert.NotEmpty(t, c.Lines, "%s %s lines", tpl, l)
-			assert.NotEmpty(t, c.Action, "%s %s action", tpl, l)
+			if noAction[tpl] {
+				assert.Empty(t, c.Action, "%s %s has no button", tpl, l)
+			} else {
+				assert.NotEmpty(t, c.Action, "%s %s action", tpl, l)
+			}
 			assert.NotEmpty(t, c.Footer, "%s %s footer", tpl, l)
 		}
 	}
@@ -49,8 +55,13 @@ func TestRenderEveryTemplateAndLocale(t *testing.T) {
 			assert.Equal(t, "ana@example.com", e.To)
 			assert.Equal(t, c.Subject, e.Subject)
 			assert.Contains(t, e.HTML, `lang="`+string(l)+`"`)
-			assert.Contains(t, e.HTML, `href="`+link+`"`)
-			assert.Contains(t, e.Text, c.Action+": "+link)
+			if c.Action == "" {
+				assert.NotContains(t, e.HTML, "href=", "no button without an action")
+				assert.NotContains(t, e.Text, link)
+			} else {
+				assert.Contains(t, e.HTML, `href="`+link+`"`)
+				assert.Contains(t, e.Text, c.Action+": "+link)
+			}
 			assert.NotContains(t, e.Text+e.HTML, "{minutes}")
 		}
 	}

@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/NickeAlves/monthra-server/internal/domain"
 	"github.com/NickeAlves/monthra-server/internal/i18n"
@@ -120,6 +121,69 @@ func (r *Users) ByID(ctx context.Context, id string) (domain.User, error) {
 	return doc.toDomain(), nil
 }
 
+// Locale returns the stored locale of an account, reading only that field.
+func (r *Users) Locale(ctx context.Context, id string) (i18n.Locale, error) {
+	oid, err := objectID(id)
+	if err != nil {
+		return "", err
+	}
+	var doc struct {
+		Preferences struct {
+			Locale string `bson:"locale"`
+		} `bson:"preferences"`
+	}
+	opts := options.FindOne().SetProjection(bson.D{{Key: "preferences.locale", Value: 1}})
+	if err := r.coll.FindOne(ctx, bson.D{{Key: "_id", Value: oid}}, opts).Decode(&doc); err != nil {
+		return "", notFound(err)
+	}
+	return i18n.Locale(doc.Preferences.Locale), nil
+}
+
+// UpdateName replaces the display name.
+func (r *Users) UpdateName(ctx context.Context, id, name string, at time.Time) error {
+	return r.set(ctx, id, bson.D{{Key: "name", Value: name}, {Key: "updated_at", Value: at.UTC()}})
+}
+
+// UpdatePreferences replaces the preferences. Each value comes from a typed,
+// validated field, never from client JSON.
+func (r *Users) UpdatePreferences(ctx context.Context, id string, p domain.Preferences, at time.Time) error {
+	return r.set(ctx, id, bson.D{
+		{Key: "preferences.locale", Value: string(p.Locale)},
+		{Key: "preferences.theme", Value: string(p.Theme)},
+		{Key: "preferences.currency", Value: p.Currency},
+		{Key: "updated_at", Value: at.UTC()},
+	})
+}
+
+// Delete removes the account. Deleting an account that is already gone is
+// not an error, so an interrupted erasure can run again.
+func (r *Users) Delete(ctx context.Context, id string) error {
+	oid, err := objectID(id)
+	if err != nil {
+		return nil //nolint:nilerr // an id that cannot exist is already deleted
+	}
+	if _, err := r.coll.DeleteOne(ctx, bson.D{{Key: "_id", Value: oid}}); err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
+}
+
+// set applies a $set to the user id, or returns domain.ErrNotFound.
+func (r *Users) set(ctx context.Context, id string, fields bson.D) error {
+	oid, err := objectID(id)
+	if err != nil {
+		return err
+	}
+	res, err := r.coll.UpdateOne(ctx, bson.D{{Key: "_id", Value: oid}}, bson.D{{Key: "$set", Value: fields}})
+	if err != nil {
+		return fmt.Errorf("update user: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 // MarkEmailVerified records that the owner confirmed the address. Verifying
 // twice keeps the first date.
 func (r *Users) MarkEmailVerified(ctx context.Context, id string, at time.Time) error {
@@ -145,21 +209,7 @@ func (r *Users) MarkEmailVerified(ctx context.Context, id string, at time.Time) 
 
 // UpdatePasswordHash replaces the stored hash.
 func (r *Users) UpdatePasswordHash(ctx context.Context, id, hash string, at time.Time) error {
-	oid, err := objectID(id)
-	if err != nil {
-		return err
-	}
-	res, err := r.coll.UpdateOne(ctx,
-		bson.D{{Key: "_id", Value: oid}},
-		bson.D{{Key: "$set", Value: bson.D{{Key: "password_hash", Value: hash}, {Key: "updated_at", Value: at.UTC()}}}},
-	)
-	if err != nil {
-		return fmt.Errorf("update password hash: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	return r.set(ctx, id, bson.D{{Key: "password_hash", Value: hash}, {Key: "updated_at", Value: at.UTC()}})
 }
 
 // ResetPassword replaces the password hash and, since following the emailed

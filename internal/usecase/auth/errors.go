@@ -39,6 +39,8 @@ var (
 	// ErrMFASetupRequired means there is no pending setup to confirm (none,
 	// expired or replaced).
 	ErrMFASetupRequired = errors.New("mfa setup required")
+	// ErrSessionNotFound means the session is not one of the caller's, or has expired.
+	ErrSessionNotFound = errors.New("session not found")
 	// ErrUnavailable means a store that guards credentials is down; the
 	// request is refused rather than let through (fail closed).
 	ErrUnavailable = errors.New("auth dependency unavailable")

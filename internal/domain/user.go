@@ -17,7 +17,7 @@ const (
 	MinPasswordLength  = 10
 	MaxPasswordLength  = 1024
 	MaxNameLength      = 100
-	DefaultCurrency    = "BRL"
+	DefaultCurrency    = CurrencyBRL
 	DefaultTheme       = ThemeSystem
 	maxPasswordBytes   = 4 * MaxPasswordLength // 1024 runes of at most 4 bytes
 	minEmailAddressLen = 3                     // a@b
@@ -33,6 +33,40 @@ const (
 	ThemeDark   Theme = "dark"
 )
 
+// Themes lists the supported themes.
+var Themes = []Theme{ThemeSystem, ThemeLight, ThemeDark}
+
+// ParseTheme returns the theme named s, if it is supported.
+func ParseTheme(s string) (Theme, bool) {
+	for _, t := range Themes {
+		if string(t) == s {
+			return t, true
+		}
+	}
+	return "", false
+}
+
+// Supported currencies (ISO 4217).
+const (
+	CurrencyBRL = "BRL"
+	CurrencyUSD = "USD"
+	CurrencyEUR = "EUR"
+)
+
+// Currencies lists the supported display currencies.
+var Currencies = []string{CurrencyBRL, CurrencyUSD, CurrencyEUR}
+
+// ParseCurrency returns the currency code s, if it is supported. Codes are
+// upper case, as ISO 4217 writes them.
+func ParseCurrency(s string) (string, bool) {
+	for _, c := range Currencies {
+		if c == s {
+			return c, true
+		}
+	}
+	return "", false
+}
+
 // Preferences are the profile settings (§7.6).
 type Preferences struct {
 	Locale   i18n.Locale
@@ -47,6 +81,51 @@ func DefaultPreferences(locale i18n.Locale) Preferences {
 		locale = i18n.Default
 	}
 	return Preferences{Locale: locale, Theme: DefaultTheme, Currency: DefaultCurrency}
+}
+
+// PreferencesPatch changes some preferences; nil fields stay as they are.
+type PreferencesPatch struct {
+	Locale   *string
+	Theme    *string
+	Currency *string
+}
+
+// Empty reports whether the patch changes nothing.
+func (p PreferencesPatch) Empty() bool {
+	return p.Locale == nil && p.Theme == nil && p.Currency == nil
+}
+
+// Apply checks every field of the patch against the supported values and
+// returns current with the changes, or a *ValidationError naming each
+// unsupported field.
+func (p PreferencesPatch) Apply(current Preferences) (Preferences, error) {
+	var v Validation
+	next := current
+	if p.Locale != nil {
+		if l, ok := i18n.Parse(*p.Locale); ok {
+			next.Locale = l
+		} else {
+			v.Add("locale", CodeInvalid)
+		}
+	}
+	if p.Theme != nil {
+		if t, ok := ParseTheme(*p.Theme); ok {
+			next.Theme = t
+		} else {
+			v.Add("theme", CodeInvalid)
+		}
+	}
+	if p.Currency != nil {
+		if c, ok := ParseCurrency(*p.Currency); ok {
+			next.Currency = c
+		} else {
+			v.Add("currency", CodeInvalid)
+		}
+	}
+	if err := v.Err(); err != nil {
+		return Preferences{}, err
+	}
+	return next, nil
 }
 
 // User is an account holder.

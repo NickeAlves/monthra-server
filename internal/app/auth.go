@@ -22,6 +22,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/ratelimit"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
 	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
+	"github.com/NickeAlves/monthra-server/internal/usecase/profile"
 )
 
 // refreshGrace maps the configured grace to the use case option, where zero
@@ -57,6 +58,8 @@ type authDeps struct {
 
 type authComponents struct {
 	handler       *handler.Auth
+	me            *handler.Me
+	locales       middleware.LocaleResolver
 	authenticator middleware.AuthOptions
 }
 
@@ -93,8 +96,10 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		return authComponents{}, fmt.Errorf("encryption keys: %w", err)
 	}
 
+	users := repomongo.NewUsers(d.db)
+	locales := cache.NewUserLocales(d.redis, d.keys, cache.DefaultLocaleTTL)
 	service := authuc.NewService(authuc.Deps{
-		Users:         repomongo.NewUsers(d.db),
+		Users:         users,
 		Sessions:      repomongo.NewSessions(d.db),
 		RefreshTokens: repomongo.NewRefreshTokens(d.db),
 		AuthTokens:    repomongo.NewAuthTokens(d.db),
@@ -115,6 +120,14 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Mailer:  d.mailer,
 		Auditor: audit.NewRecorder(repomongo.NewAuditLogs(d.db), logger),
 		Metrics: metrics,
+		// Feature data first (step 3 domains and Open Finance register theirs
+		// above these), then the auth stores; the account itself goes last.
+		Erasers: []authuc.UserDataEraser{
+			repomongo.NewUserEraser(d.db, repomongo.CollAuthTokens),
+			repomongo.NewUserEraser(d.db, repomongo.CollRefreshTokens),
+			repomongo.NewUserEraser(d.db, repomongo.CollSessions),
+			locales,
+		},
 	}, authuc.Options{
 		RefreshTTL:    cfg.Auth.RefreshTokenTTL,
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,
@@ -126,8 +139,12 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Logger:        logger,
 	})
 
+	profiles := profile.NewService(users, locales, profile.Options{Logger: logger})
+
 	return authComponents{
 		handler:       &handler.Auth{Service: service, Cookies: d.cookies, Logger: logger},
+		me:            &handler.Me{Profile: profiles, Account: service, Cookies: d.cookies, Logger: logger},
+		locales:       profiles,
 		authenticator: middleware.AuthOptions{Tokens: tokens, Revocations: revocations, Cookies: d.cookies, Logger: logger},
 	}, nil
 }

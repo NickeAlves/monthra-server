@@ -29,6 +29,9 @@ const (
 	TemplateMFAEnabled Template = "mfa_enabled"
 	// TemplateMFADisabled tells the owner that two-step verification was turned off.
 	TemplateMFADisabled Template = "mfa_disabled"
+	// TemplateAccountDeleted confirms that the account and its data were
+	// deleted. It has no call to action: there is no account left to act on.
+	TemplateAccountDeleted Template = "account_deleted"
 )
 
 // Message is an email to render and send. It never carries user-chosen text:
@@ -38,7 +41,7 @@ type Message struct {
 	To       string
 	Locale   i18n.Locale
 	Template Template
-	// Link is the call to action.
+	// Link is the call to action, if the template has one.
 	Link string
 	// LinkTTL is how long Link works, when it expires.
 	LinkTTL time.Duration
