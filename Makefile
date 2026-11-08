@@ -8,12 +8,12 @@ GOLANGCI_IMAGE := golangci/golangci-lint:v2.15.0@sha256:fbfcfd12a6f8d7f1b97b3362
 COMPOSE        := docker compose
 COMPOSE_STG    := docker compose -f docker-compose.yml -f docker-compose.staging.yml
 
-.PHONY: help env network up down logs ps run test test-integration cover fmt lint vuln build staging-up staging-down
+.PHONY: help env secrets network up down logs ps run test test-integration cover fmt lint vuln build staging-up staging-down
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-17s %s\n", $$1, $$2}'
 
-REQUIRED_ENV := MONGO_URI REDIS_ADDR MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD REDIS_PASSWORD
+REQUIRED_ENV := MONGO_URI REDIS_ADDR MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD REDIS_PASSWORD CSRF_SECRET
 
 env: ## Fail unless .env exists and every required value is set (cp .env.example .env)
 	@test -f .env || { echo ".env is missing: cp .env.example .env and set the passwords"; exit 1; }
@@ -21,6 +21,9 @@ env: ## Fail unless .env exists and every required value is set (cp .env.example
 	  grep -qE "^$$v=.+" .env || { echo "$$v is empty in .env"; exit 1; }; \
 	done
 	@! grep -qE '^[A-Z_]+=.*change-me' .env || { echo "replace every change-me value in .env"; exit 1; }
+
+secrets: ## Print fresh random values for the secret variables of .env (paste them in)
+	@echo "CSRF_SECRET=$$(openssl rand -base64 32)"
 
 network: ## Create the shared Docker network used by every Monthra compose file
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null
