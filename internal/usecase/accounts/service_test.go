@@ -98,13 +98,15 @@ func (m *memStore) Delete(_ context.Context, userID, id string) error {
 
 // fakeLedger answers fixed sums and usage, and records what it was asked.
 type fakeLedger struct {
-	sums   map[string]domain.Balance
-	inUse  map[string]bool
-	err    error
-	calls  int
-	ids    []string
-	asOf   domain.Date
-	userID string
+	sums     map[string]domain.Balance
+	inUse    map[string]bool
+	invoices []domain.InvoiceSums
+	err      error
+	calls    int
+	ids      []string
+	asOf     domain.Date
+	through  domain.Month
+	userID   string
 }
 
 func (l *fakeLedger) Balances(_ context.Context, userID string, ids []string, asOf domain.Date) (map[string]domain.Balance, error) {
@@ -125,6 +127,12 @@ func (l *fakeLedger) Balances(_ context.Context, userID string, ids []string, as
 func (l *fakeLedger) AccountInUse(_ context.Context, userID, id string) (bool, error) {
 	l.userID = userID
 	return l.inUse[id], l.err
+}
+
+func (l *fakeLedger) InvoiceSums(_ context.Context, userID, accountID string, through domain.Month) ([]domain.InvoiceSums, error) {
+	l.calls++
+	l.userID, l.ids, l.through = userID, []string{accountID}, through
+	return l.invoices, l.err
 }
 
 func newService(store Store, max int) *Service {
@@ -334,6 +342,83 @@ func TestAnotherUsersAccountIsNotFound(t *testing.T) {
 
 	require.NoError(t, svc.Delete(ctx, "u1", a.ID))
 	assert.ErrorIs(t, svc.Delete(ctx, "u1", a.ID), domain.ErrNotFound)
+}
+
+func month(t *testing.T, s string) domain.Month {
+	t.Helper()
+	m, err := domain.ParseMonth(s)
+	require.NoError(t, err)
+	return m
+}
+
+func TestInvoices(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	ledger := &fakeLedger{}
+	svc := NewService(store, ledger, Options{Now: func() time.Time { return t0 }})
+	card, err := svc.Create(ctx, "u1", domain.AccountInput{
+		Name: "Card", Type: "credit_card", Currency: "BRL", InitialBalance: -1000,
+		Card: &domain.CardSettings{ClosingDay: 25, DueDay: 5},
+	})
+	require.NoError(t, err)
+	ledger.invoices = []domain.InvoiceSums{{Month: month(t, "2026-11"), Charges: 500}, {Month: month(t, "2026-12"), Charges: 2000}}
+
+	// t0 is November 8: the open invoice is December's.
+	got, err := svc.Invoices(ctx, "u1", card.ID, domain.Month{}, domain.Month{}, domain.Date{})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "2026-12", got[0].Month.String())
+	assert.Equal(t, domain.InvoiceOpen, got[0].Status)
+	assert.Equal(t, int64(1500), got[0].PreviousBalance, "the opening debt and November")
+	assert.Equal(t, int64(3500), got[0].Remaining)
+	assert.Equal(t, "u1", ledger.userID)
+	assert.Equal(t, []string{card.ID}, ledger.ids)
+	assert.Equal(t, month(t, "2026-12"), ledger.through, "sums up to the last month asked")
+
+	asOf, err := domain.ParseDate("2026-11-25")
+	require.NoError(t, err)
+	got, err = svc.Invoices(ctx, "u1", card.ID, domain.Month{}, domain.Month{}, asOf)
+	require.NoError(t, err)
+	assert.Equal(t, "2027-01", got[0].Month.String(), "the reader's today picks the open invoice")
+	assert.Equal(t, month(t, "2027-01"), ledger.through)
+
+	got, err = svc.Invoices(ctx, "u1", card.ID, month(t, "2026-11"), domain.Month{}, asOf)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a missing bound takes the other one")
+	assert.Equal(t, "2026-11", got[0].Month.String())
+	got, err = svc.Invoices(ctx, "u1", card.ID, domain.Month{}, month(t, "2027-03"), asOf)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "2027-03", got[0].Month.String())
+
+	got, err = svc.Invoices(ctx, "u1", card.ID, month(t, "2026-01"), month(t, "2027-12"), asOf)
+	require.NoError(t, err)
+	assert.Len(t, got, domain.MaxInvoiceRange)
+
+	calls := ledger.calls
+	_, err = svc.Invoices(ctx, "u1", card.ID, month(t, "2026-01"), month(t, "2028-01"), asOf)
+	assert.Equal(t, []domain.FieldError{{Field: "to", Code: domain.CodeOutOfRange}}, validationFields(t, err))
+	_, err = svc.Invoices(ctx, "u1", card.ID, month(t, "2026-02"), month(t, "2026-01"), asOf)
+	assert.Equal(t, []domain.FieldError{{Field: "to", Code: domain.CodeInvalid}}, validationFields(t, err))
+	assert.Equal(t, calls, ledger.calls, "a bad range sums nothing")
+
+	bank, err := svc.Create(ctx, "u1", checking("Bank"))
+	require.NoError(t, err)
+	_, err = svc.Invoices(ctx, "u1", bank.ID, domain.Month{}, domain.Month{}, domain.Date{})
+	assert.ErrorIs(t, err, domain.ErrNotFound, "an account that is no card has no invoices")
+	_, err = svc.Invoices(ctx, "u2", card.ID, domain.Month{}, domain.Month{}, domain.Date{})
+	assert.ErrorIs(t, err, domain.ErrNotFound, "another user's card")
+
+	ledger.err = errors.New("timeout")
+	_, err = svc.Invoices(ctx, "u1", card.ID, domain.Month{}, domain.Month{}, domain.Date{})
+	assert.ErrorContains(t, err, "sum invoices: timeout")
+}
+
+func validationFields(t *testing.T, err error) []domain.FieldError {
+	t.Helper()
+	var ve *domain.ValidationError
+	require.ErrorAs(t, err, &ve)
+	return ve.Fields
 }
 
 func TestNewServiceDefaults(t *testing.T) {

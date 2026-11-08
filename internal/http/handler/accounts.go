@@ -19,6 +19,7 @@ type AccountsService interface {
 	Get(ctx context.Context, userID, id string, asOf domain.Date) (domain.AccountWithBalance, error)
 	Update(ctx context.Context, userID, id string, p domain.AccountPatch, asOf domain.Date) (domain.AccountWithBalance, error)
 	Delete(ctx context.Context, userID, id string) error
+	Invoices(ctx context.Context, userID, id string, from, to domain.Month, asOf domain.Date) ([]domain.Invoice, error)
 }
 
 // Accounts serves /api/v1/accounts, always for the caller of the access
@@ -36,6 +37,7 @@ func (h *Accounts) Mount(r chi.Router) {
 	r.Get("/accounts/{id}", h.Get)
 	r.Patch("/accounts/{id}", h.Update)
 	r.Delete("/accounts/{id}", h.Delete)
+	r.Get("/accounts/{id}/invoices", h.Invoices)
 }
 
 // asOf reads the day the balances count up to (?asOf=YYYY-MM-DD, the
@@ -133,6 +135,27 @@ func (h *Accounts) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writePrivateJSON(w, dto.NewAccount(a))
+}
+
+// Invoices handles GET /accounts/{id}/invoices?from=YYYY-MM&to=YYYY-MM&asOf=YYYY-MM-DD:
+// the invoices of a credit card, one per month. An account that is not a
+// card answers 404, like one that does not exist.
+func (h *Accounts) Invoices(w http.ResponseWriter, r *http.Request) {
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	q, err := dto.ParseInvoiceQuery(r.URL.Query())
+	if err != nil {
+		writeError(w, r, h.Logger, err)
+		return
+	}
+	list, err := h.Service.Invoices(r.Context(), p.UserID, chi.URLParam(r, "id"), q.From, q.To, q.AsOf)
+	if err != nil {
+		writeError(w, r, h.Logger, err)
+		return
+	}
+	writePrivateJSON(w, dto.NewInvoices(list))
 }
 
 // Delete handles DELETE /accounts/{id}; an account with transactions

@@ -97,9 +97,32 @@ func TestCreateTransaction(t *testing.T) {
 	assert.Equal(t, map[string]any{
 		"id": "t1", "kind": "transfer", "accountId": "a1", "currency": "BRL", "categoryId": nil,
 		"toAccountId": "a2", "toCurrency": "USD", "amount": float64(100000), "toAmount": float64(19000),
-		"date": "2026-11-08", "description": "Trip money", "tags": []any{"travel"}, "source": "manual",
-		"createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
+		"date": "2026-11-08", "invoiceMonth": nil, "toInvoiceMonth": nil, "description": "Trip money",
+		"tags": []any{"travel"}, "source": "manual", "createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
 	}, jsonOf(t, w), "no owner id and no search field in the answer")
+}
+
+func TestTransactionInvoices(t *testing.T) {
+	dec, err := domain.ParseMonth("2026-12")
+	require.NoError(t, err)
+	tx := sampleTransfer(t)
+	tx.InvoiceMonth, tx.ToInvoiceMonth = dec, dec.AddMonths(1)
+	svc := &fakeTransactions{tx: tx}
+	body := `{"kind":"transfer","accountId":"a1","toAccountId":"a2","amount":1,"date":"2026-11-08","invoiceMonth":"2026-12","toInvoiceMonth":"2027-01"}`
+	w := serveTransactions(svc, request(http.MethodPost, "/transactions", body))
+	require.Equal(t, http.StatusCreated, w.Code)
+	assert.Equal(t, "2026-12", svc.input.InvoiceMonth)
+	assert.Equal(t, "2027-01", svc.input.ToInvoiceMonth)
+	got := jsonOf(t, w)
+	assert.Equal(t, "2026-12", got["invoiceMonth"])
+	assert.Equal(t, "2027-01", got["toInvoiceMonth"])
+
+	w = serveTransactions(svc, request(http.MethodPatch, "/transactions/t1", `{"invoiceMonth":"","toInvoiceMonth":"2027-02"}`))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, svc.patch.InvoiceMonth)
+	assert.Empty(t, *svc.patch.InvoiceMonth, "empty picks the invoice from the day again")
+	require.NotNil(t, svc.patch.ToInvoiceMonth)
+	assert.Equal(t, "2027-02", *svc.patch.ToInvoiceMonth)
 }
 
 func TestTransactionViewOfAnExpense(t *testing.T) {
@@ -161,14 +184,14 @@ func TestListTransactions(t *testing.T) {
 	svc := &fakeTransactions{page: transactions.Page{Items: []domain.Transaction{tx}, Next: next}}
 	cursor := dto.EncodeCursor(domain.TransactionCursor{Date: day(t, "2026-11-09"), ID: "abc123"})
 	w := serveTransactions(svc, request(http.MethodGet,
-		"/transactions?from=2026-11-01&to=2026-11-30&accountId=a1&categoryId=c1&kind=transfer&tag=%20Travel&q=Caf%C3%A9&limit=20&cursor="+cursor, ""))
+		"/transactions?from=2026-11-01&to=2026-11-30&accountId=a1&categoryId=c1&kind=transfer&tag=%20Travel&q=Caf%C3%A9&invoice=2026-12&limit=20&cursor="+cursor, ""))
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 	assert.Equal(t, transactions.Query{
 		Filter: domain.TransactionFilter{
 			From: day(t, "2026-11-01"), To: day(t, "2026-11-30"), AccountID: "a1", CategoryID: "c1",
-			Kind: domain.TransactionTransfer, Tag: "travel", Search: "cafe",
+			Kind: domain.TransactionTransfer, Tag: "travel", Search: "cafe", Invoice: domain.NewMonth(2026, 12),
 		},
 		After: &domain.TransactionCursor{Date: day(t, "2026-11-09"), ID: "abc123"},
 		Limit: 20,
@@ -199,6 +222,9 @@ func TestListTransactionsRejectsBadQueries(t *testing.T) {
 		"q=" + longText(101):             {"q": domain.CodeTooLong},
 		"tag=" + longText(31):            {"tag": domain.CodeTooLong},
 		"kind=x&limit=y":                 {"kind": domain.CodeInvalid, "limit": domain.CodeInvalid},
+		"accountId=a1&invoice=2026-1":    {"invoice": domain.CodeInvalid},
+		"accountId=a1&invoice=2101-01":   {"invoice": domain.CodeOutOfRange},
+		"invoice=2026-12":                {"accountId": domain.CodeRequired},
 	} {
 		svc := &fakeTransactions{}
 		w := serveTransactions(svc, request(http.MethodGet, "/transactions?"+query, ""))

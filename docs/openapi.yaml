@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -151,10 +151,36 @@ info:
     - `GET /transactions` answers pages, newest day first, with `nextCursor` (opaque, null on
       the last page) to pass back as `?cursor=`. Filters: `from`/`to` (days, both included),
       `accountId` (its transactions and the transfers it received), `categoryId`, `kind`,
-      `tag` and `q` (text in the description, ignoring case and accents).
+      `tag`, `q` (text in the description, ignoring case and accents) and `invoice` (with
+      `accountId`: the transactions of one invoice of that card).
     - Every route acts on the caller's transactions only: another user's transaction, or an
       id of another user's account or category in the body, reads like one that does not
       exist (`404`, or `invalid` on the field).
+
+    ## Credit card invoices (`/api/v1/accounts/{id}/invoices`)
+
+    - An invoice is named after the month it falls due in (`"2026-12"` falls due on the
+      card's `dueDay` of December). It closes on `closingDay` of that month when `dueDay` comes
+      later, of the month before otherwise; a day past the end of a shorter month is its last
+      day.
+    - A transaction on a card belongs to an invoice (`invoiceMonth`): an expense or a transfer
+      out of the card is a charge, an income on it (a refund) a credit. A purchase belongs to
+      the first invoice that closes after its day, so one on the closing day goes to the next
+      invoice.
+    - Paying an invoice is a `transfer` to the card; `toInvoiceMonth` is the invoice it pays,
+      by default the last one closed on the payment's day.
+    - The invoice is stored with the transaction when it is written, so changing the card's
+      days later moves no transaction. A transaction may name another invoice
+      (`invoiceMonth`/`toInvoiceMonth`, within 12 months of the one its day picks): a purchase
+      the bank posted late, a payment made early. A change of day or account picks the invoice
+      again unless the change names one; an empty one picks it from the day again.
+    - What an invoice leaves unpaid rolls into the next one as `previousBalance`, the card's
+      opening debt (a negative `initialBalance`) included. There is no interest and no minimum
+      payment. A negative balance is a credit.
+    - `status` on `?asOf=` (the client's local today): `upcoming` (its cycle has not begun),
+      `open`, `closed` (waiting for its payment), `paid`, `overdue` (past its due day with
+      something left) or `carried_over` (the next invoice closed with what it left).
+    - Closing and due days come from the card's current settings.
 
     ## Rate limits
 
@@ -181,6 +207,8 @@ tags:
     description: The caller's expense and income categories
   - name: transactions
     description: The caller's expenses, income and transfers
+  - name: invoices
+    description: The invoices of the caller's credit cards
 paths:
   /healthz:
     get:
@@ -1012,6 +1040,60 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/accounts/{id}/invoices:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [invoices]
+      summary: List the invoices of a credit card
+      description: |
+        One invoice per month from `from` to `to` (both included, at most 24), the months
+        without transactions included. A missing bound takes the other one; with neither, the
+        invoice open on `asOf`. An account that is not a credit card has no invoices and
+        answers `404`, like another user's account.
+      operationId: listInvoices
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/Month"
+        - name: to
+          in: query
+          required: false
+          description: "Not before `from` (`to: invalid`), at most 23 months after it (`to: out_of_range`)."
+          schema:
+            $ref: "#/components/schemas/Month"
+        - name: asOf
+          in: query
+          required: false
+          description: The day the statuses (and the default invoice) are read on, the client's local today; today in UTC when absent.
+          schema:
+            $ref: "#/components/schemas/Date"
+      responses:
+        "200":
+          description: "The invoices, oldest first (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceList"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /api/v1/categories:
     get:
       tags: [categories]
@@ -1242,6 +1324,14 @@ paths:
           schema:
             type: string
             maxLength: 100
+        - name: invoice
+          in: query
+          required: false
+          description: |
+            One invoice of the card `accountId` (required with it: `accountId: required`): its
+            charges, credits and the payments to it.
+          schema:
+            $ref: "#/components/schemas/Month"
         - name: limit
           in: query
           required: false
@@ -2079,6 +2169,11 @@ components:
       format: date
       description: A civil day, `YYYY-MM-DD`, from 1900-01-01 to 2100-12-31; no time, no zone.
       examples: ["2026-11-30"]
+    Month:
+      type: string
+      pattern: "^[0-9]{4}-[0-9]{2}$"
+      description: A civil month, `YYYY-MM`, from 1900-01 to 2100-12.
+      examples: ["2026-12"]
     Amount:
       type: integer
       format: int64
@@ -2123,6 +2218,19 @@ components:
             between two currencies; between accounts of one currency it equals `amount`.
         date:
           $ref: "#/components/schemas/Date"
+        invoiceMonth:
+          allOf:
+            - $ref: "#/components/schemas/Month"
+          description: |
+            A credit card `accountId` only (`invalid` otherwise): the invoice of the
+            transaction, within 12 months of the one its day picks (`out_of_range`). Absent, the
+            day picks it.
+        toInvoiceMonth:
+          allOf:
+            - $ref: "#/components/schemas/Month"
+          description: |
+            A transfer to a credit card only: the invoice it pays, within 12 months of the
+            default. Absent, the last invoice closed on its day.
         description:
           type: string
           maxLength: 200
@@ -2150,6 +2258,13 @@ components:
           description: Transfers only.
         date:
           $ref: "#/components/schemas/Date"
+          description: On a credit card, a new day picks the invoice again unless `invoiceMonth` is given.
+        invoiceMonth:
+          type: string
+          description: A credit card leg only; an empty string picks the invoice from the day again.
+        toInvoiceMonth:
+          type: string
+          description: A transfer to a credit card only; an empty string picks the default again.
         description:
           type: string
           maxLength: 200
@@ -2158,7 +2273,7 @@ components:
           $ref: "#/components/schemas/Tags"
     Transaction:
       type: object
-      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, description, tags, source, createdAt, updatedAt]
+      required: [id, kind, accountId, currency, categoryId, toAccountId, toCurrency, amount, toAmount, date, invoiceMonth, toInvoiceMonth, description, tags, source, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -2188,6 +2303,13 @@ components:
           description: What a transfer added to `toAccountId`, in minor units of `toCurrency`.
         date:
           $ref: "#/components/schemas/Date"
+        invoiceMonth:
+          type: [string, "null"]
+          description: The invoice of a transaction on a credit card (`YYYY-MM`); null otherwise.
+          examples: ["2026-12"]
+        toInvoiceMonth:
+          type: [string, "null"]
+          description: The invoice a transfer to a credit card pays; null otherwise.
         description:
           type: string
         tags:
@@ -2214,6 +2336,55 @@ components:
         nextCursor:
           type: [string, "null"]
           description: Pass it as `cursor` for the next page; null on the last one.
+    Invoice:
+      type: object
+      required: [month, closingDate, dueDate, status, currency, previousBalance, charges, credits, total, paid, remaining]
+      description: Amounts in minor units of `currency`.
+      properties:
+        month:
+          $ref: "#/components/schemas/Month"
+        closingDate:
+          $ref: "#/components/schemas/Date"
+        dueDate:
+          $ref: "#/components/schemas/Date"
+        status:
+          type: string
+          enum: [upcoming, open, closed, paid, overdue, carried_over]
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        previousBalance:
+          type: integer
+          format: int64
+          description: What the invoices before left unpaid, the opening debt included; negative is a credit.
+        charges:
+          type: integer
+          format: int64
+          description: Expenses and transfers out of the card.
+        credits:
+          type: integer
+          format: int64
+          description: Income on the card (refunds, cashback).
+        total:
+          type: integer
+          format: int64
+          description: "`previousBalance + charges - credits`."
+        paid:
+          type: integer
+          format: int64
+          description: What the payments to this invoice brought.
+        remaining:
+          type: integer
+          format: int64
+          description: "`total - paid`; it becomes the next invoice's `previousBalance`."
+    InvoiceList:
+      type: object
+      required: [invoices]
+      properties:
+        invoices:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invoice"
     CsrfToken:
       type: object
       required: [csrfToken]

@@ -31,4 +31,8 @@ type Ledger interface {
 	// AccountInUse reports whether account id of userID has transactions,
 	// as their account or as the destination of a transfer.
 	AccountInUse(ctx context.Context, userID, id string) (bool, error)
+	// InvoiceSums sums the transactions of card accountID of userID by
+	// invoice (charges, credits and payments), for every invoice up to
+	// through, oldest first; one without transactions is missing.
+	InvoiceSums(ctx context.Context, userID, accountID string, through domain.Month) ([]domain.InvoiceSums, error)
 }
