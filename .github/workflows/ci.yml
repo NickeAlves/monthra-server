@@ -28,8 +28,9 @@ jobs:
         run: |
           file="gitleaks_${VERSION}_linux_x64.tar.gz"
           base="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
-          curl -sSfLO "${base}/${file}"
-          curl -sSfL "${base}/gitleaks_${VERSION}_checksums.txt" | grep " ${file}\$" | sha256sum -c -
+          # GitHub release downloads fail with 5xx now and then: retry them.
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 -O "${base}/${file}"
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 "${base}/gitleaks_${VERSION}_checksums.txt" | grep " ${file}\$" | sha256sum -c -
           tar -xzf "${file}" gitleaks
       - name: Scan the full history
         run: ./gitleaks git --no-banner --redact --verbose .
