@@ -154,6 +154,17 @@ The money accounts of the caller: `/api/v1/accounts` and `/api/v1/accounts/{id}`
 - **Ownership:** every query filters by the record id and the caller's `user_id`, which only ever comes from the access token. Another user's account answers `404` like an unknown one, and the bodies reject unknown fields, so no client can choose an owner or set a `$` operator.
 - `DELETE /me` erases the accounts before the auth data.
 
+## Categories
+
+The expense and income categories of the caller: `/api/v1/categories` (`?kind=expense|income`) and `/api/v1/categories/{id}`.
+
+- **Fields:** a name (1 to 50 characters, may repeat), a `kind` (`expense` or `income`, fixed at creation), a Lucide icon name in kebab-case (`shopping-cart`; clients show a generic icon for a name they do not know) and a `#RRGGBB` color, answered in upper case.
+- **Default set:** every user starts with 22 categories (16 expense, 6 income; see `internal/domain/category_defaults.go`), created on their first `GET` or `POST /categories`. A default carries a stable `defaultKey` (`groceries`, `salary`, ...) and is named in the caller's language until renamed. After a rename, the name stays the same in every language and the key stays too.
+- **Seeding without duplicates:** the defaults are inserted unordered, and the partial unique index `categories_user_default_key_unique` on `{user_id, default_key}` drops the ones already there. Then `users.categories_seeded_at` is set. A request that fails halfway is completed by the next one, concurrent first reads all get the whole set, and once the user is marked, a deleted default never comes back.
+- **Limits:** at most 200 categories per user, the defaults included (`409 limit_reached`); the list comes back whole, oldest first, so the defaults keep their curated order.
+- **Ownership:** same as accounts (`{_id, user_id}` filter, `404` for another user's category, strict bodies). `kind` and `defaultKey` are not patchable.
+- `DELETE /me` erases the categories before the auth data.
+
 ## Browser security
 
 - **CORS:** only `CORS_ALLOWED_ORIGINS` get CORS headers (with credentials). A preflight from any other origin gets 403.

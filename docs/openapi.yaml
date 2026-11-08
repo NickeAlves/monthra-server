@@ -115,6 +115,17 @@ info:
     - Every route acts on the caller's accounts only: another user's account answers `404`,
       exactly like one that does not exist.
 
+    ## Categories (`/api/v1/categories`)
+
+    - A category is `expense` or `income`, fixed when it is created, with a Lucide icon name in
+      kebab-case (`shopping-cart`) and a `#RRGGBB` color (answered in upper case).
+    - Every user starts with 22 default categories, created on their first `GET` or `POST`.
+      A default carries its `defaultKey` (`groceries`, `salary`, ...) and is named in the
+      caller's language (the stored preference) until renamed; a renamed default keeps its
+      key and its new name in every language. A deleted default does not come back.
+    - One user holds at most 200 categories, the defaults included (`409 limit_reached`).
+    - Every route acts on the caller's categories only: another user's category answers `404`.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
@@ -136,6 +147,8 @@ tags:
     description: The caller's own account, preferences, password and sessions
   - name: accounts
     description: The caller's money accounts (bank, savings, credit card, cash, brokerage)
+  - name: categories
+    description: The caller's expense and income categories
 paths:
   /healthz:
     get:
@@ -954,6 +967,165 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/categories:
+    get:
+      tags: [categories]
+      summary: List the categories
+      description: |
+        Oldest first, so the defaults come in their curated order (expenses, then income) and
+        new categories after them. The first call of a user creates the default categories.
+      operationId: listCategories
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [expense, income]
+      responses:
+        "200":
+          description: "The categories, every one of them (at most 200; `Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CategoryList"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [categories]
+      summary: Create a category
+      description: The default categories are created first, and count toward the limit of 200.
+      operationId: createCategory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The path of the new category.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/LimitReached"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/categories/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [categories]
+      summary: Read a category
+      operationId: getCategory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The category (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [categories]
+      summary: Change a category
+      description: |
+        Absent fields stay as they are. Naming a default category fixes its name in every
+        language. `kind` and `defaultKey` are not fields: sending them answers `400`. A change
+        that changes nothing answers the category as it is.
+      operationId: updateCategory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryPatch"
+      responses:
+        "200":
+          description: The category after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [categories]
+      summary: Delete a category
+      description: Deletes the category for good. A deleted default is not created again.
+      operationId: deleteCategory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     bearerAuth:
@@ -1497,6 +1669,103 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Account"
+    CategoryIcon:
+      type: string
+      maxLength: 64
+      pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+      description: A Lucide icon name in kebab-case. Clients show a generic icon for a name they do not know.
+      examples: [shopping-cart]
+    CategoryColor:
+      type: string
+      pattern: "^#[0-9A-Fa-f]{6}$"
+      description: "`#RRGGBB`; answered in upper case."
+      examples: ["#1E6B52"]
+    CategoryCreate:
+      type: object
+      additionalProperties: false
+      required: [name, kind, icon, color]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        kind:
+          type: string
+          enum: [expense, income]
+          description: Fixed for the life of the category.
+        icon:
+          $ref: "#/components/schemas/CategoryIcon"
+        color:
+          $ref: "#/components/schemas/CategoryColor"
+    CategoryPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        icon:
+          $ref: "#/components/schemas/CategoryIcon"
+        color:
+          $ref: "#/components/schemas/CategoryColor"
+    Category:
+      type: object
+      required: [id, name, kind, icon, color, defaultKey, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: The owner's name, or the default's name in the caller's language until renamed.
+        kind:
+          type: string
+          enum: [expense, income]
+        icon:
+          $ref: "#/components/schemas/CategoryIcon"
+        color:
+          $ref: "#/components/schemas/CategoryColor"
+        defaultKey:
+          type: [string, "null"]
+          description: The default category this one was created from, or null for the owner's own.
+          enum:
+            - housing
+            - groceries
+            - dining
+            - transport
+            - health
+            - education
+            - leisure
+            - shopping
+            - utilities
+            - subscriptions
+            - personal_care
+            - pets
+            - travel
+            - taxes_fees
+            - gifts_donations
+            - other_expense
+            - salary
+            - side_income
+            - investment_income
+            - refunds
+            - gifts_received
+            - other_income
+            - null
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CategoryList:
+      type: object
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Category"
     CsrfToken:
       type: object
       required: [csrfToken]
