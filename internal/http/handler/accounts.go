@@ -14,10 +14,10 @@ import (
 
 // AccountsService is what the /accounts handlers need from the use case.
 type AccountsService interface {
-	List(ctx context.Context, userID string, includeArchived bool) ([]domain.Account, error)
-	Create(ctx context.Context, userID string, in domain.AccountInput) (domain.Account, error)
-	Get(ctx context.Context, userID, id string) (domain.Account, error)
-	Update(ctx context.Context, userID, id string, p domain.AccountPatch) (domain.Account, error)
+	List(ctx context.Context, userID string, includeArchived bool, asOf domain.Date) ([]domain.AccountWithBalance, error)
+	Create(ctx context.Context, userID string, in domain.AccountInput) (domain.AccountWithBalance, error)
+	Get(ctx context.Context, userID, id string, asOf domain.Date) (domain.AccountWithBalance, error)
+	Update(ctx context.Context, userID, id string, p domain.AccountPatch, asOf domain.Date) (domain.AccountWithBalance, error)
 	Delete(ctx context.Context, userID, id string) error
 }
 
@@ -38,9 +38,24 @@ func (h *Accounts) Mount(r chi.Router) {
 	r.Delete("/accounts/{id}", h.Delete)
 }
 
-// List handles GET /accounts?includeArchived=true.
+// asOf reads the day the balances count up to (?asOf=YYYY-MM-DD, the
+// reader's today), answering 422 when it is not a day.
+func (h *Accounts) asOf(w http.ResponseWriter, r *http.Request) (domain.Date, bool) {
+	d, err := dto.ParseAsOf(r.URL.Query().Get("asOf"))
+	if err != nil {
+		writeError(w, r, h.Logger, err)
+		return domain.Date{}, false
+	}
+	return d, true
+}
+
+// List handles GET /accounts?includeArchived=true&asOf=YYYY-MM-DD.
 func (h *Accounts) List(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	asOf, ok := h.asOf(w, r)
 	if !ok {
 		return
 	}
@@ -53,7 +68,7 @@ func (h *Accounts) List(w http.ResponseWriter, r *http.Request) {
 		}
 		includeArchived = v
 	}
-	list, err := h.Service.List(r.Context(), p.UserID, includeArchived)
+	list, err := h.Service.List(r.Context(), p.UserID, includeArchived, asOf)
 	if err != nil {
 		writeError(w, r, h.Logger, err)
 		return
@@ -61,7 +76,8 @@ func (h *Accounts) List(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewAccounts(list))
 }
 
-// Create handles POST /accounts.
+// Create handles POST /accounts. A new account's balances are its initial
+// balance.
 func (h *Accounts) Create(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
@@ -79,13 +95,17 @@ func (h *Accounts) Create(w http.ResponseWriter, r *http.Request) {
 	writeCreatedJSON(w, "/api/v1/accounts/"+a.ID, dto.NewAccount(a))
 }
 
-// Get handles GET /accounts/{id}.
+// Get handles GET /accounts/{id}?asOf=YYYY-MM-DD.
 func (h *Accounts) Get(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
 		return
 	}
-	a, err := h.Service.Get(r.Context(), p.UserID, chi.URLParam(r, "id"))
+	asOf, ok := h.asOf(w, r)
+	if !ok {
+		return
+	}
+	a, err := h.Service.Get(r.Context(), p.UserID, chi.URLParam(r, "id"), asOf)
 	if err != nil {
 		writeError(w, r, h.Logger, err)
 		return
@@ -93,9 +113,13 @@ func (h *Accounts) Get(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewAccount(a))
 }
 
-// Update handles PATCH /accounts/{id}.
+// Update handles PATCH /accounts/{id}?asOf=YYYY-MM-DD.
 func (h *Accounts) Update(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	asOf, ok := h.asOf(w, r)
 	if !ok {
 		return
 	}
@@ -103,7 +127,7 @@ func (h *Accounts) Update(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, h.Logger, &req) {
 		return
 	}
-	a, err := h.Service.Update(r.Context(), p.UserID, chi.URLParam(r, "id"), req.Patch())
+	a, err := h.Service.Update(r.Context(), p.UserID, chi.URLParam(r, "id"), req.Patch(), asOf)
 	if err != nil {
 		writeError(w, r, h.Logger, err)
 		return
@@ -111,7 +135,8 @@ func (h *Accounts) Update(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewAccount(a))
 }
 
-// Delete handles DELETE /accounts/{id}.
+// Delete handles DELETE /accounts/{id}; an account with transactions
+// answers 409 account_in_use (archive it instead).
 func (h *Accounts) Delete(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {

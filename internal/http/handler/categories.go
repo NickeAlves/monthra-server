@@ -18,7 +18,7 @@ type CategoriesService interface {
 	Create(ctx context.Context, userID string, in domain.CategoryInput) (domain.Category, error)
 	Get(ctx context.Context, userID, id string) (domain.Category, error)
 	Update(ctx context.Context, userID, id string, p domain.CategoryPatch) (domain.Category, error)
-	Delete(ctx context.Context, userID, id string) error
+	Delete(ctx context.Context, userID, id, reassignTo string) error
 }
 
 // Categories serves /api/v1/categories, always for the caller of the access
@@ -113,13 +113,16 @@ func (h *Categories) Update(w http.ResponseWriter, r *http.Request) {
 	writePrivateJSON(w, dto.NewCategory(c, i18n.FromContext(r.Context())))
 }
 
-// Delete handles DELETE /categories/{id}.
+// Delete handles DELETE /categories/{id}?reassignTo={id}. A category with
+// transactions answers 409 category_in_use unless reassignTo names another
+// category of the same kind to move them to.
 func (h *Categories) Delete(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
 		return
 	}
-	if err := h.Service.Delete(r.Context(), p.UserID, chi.URLParam(r, "id")); err != nil {
+	reassignTo := r.URL.Query().Get("reassignTo")
+	if err := h.Service.Delete(r.Context(), p.UserID, chi.URLParam(r, "id"), reassignTo); err != nil {
 		writeError(w, r, h.Logger, err)
 		return
 	}

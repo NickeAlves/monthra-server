@@ -20,3 +20,15 @@ type Store interface {
 	Update(ctx context.Context, a domain.Account) error
 	Delete(ctx context.Context, userID, id string) error
 }
+
+// Ledger is what the accounts need from the transactions.
+type Ledger interface {
+	// Balances sums the transactions of userID by account (the initial
+	// balances are not included): up to asOf, and in total. Only the
+	// accounts of accountIDs are summed, unless it is nil; one without
+	// transactions is missing from the map.
+	Balances(ctx context.Context, userID string, accountIDs []string, asOf domain.Date) (map[string]domain.Balance, error)
+	// AccountInUse reports whether account id of userID has transactions,
+	// as their account or as the destination of a transfer.
+	AccountInUse(ctx context.Context, userID, id string) (bool, error)
+}

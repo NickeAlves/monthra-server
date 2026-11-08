@@ -112,6 +112,20 @@ type Balance struct {
 	Projected int64
 }
 
+// AccountWithBalance is an account and what it holds.
+type AccountWithBalance struct {
+	Account
+	Balance Balance
+}
+
+// WithBalance adds the initial balance of a to the sums of its transactions.
+func (a Account) WithBalance(sums Balance) AccountWithBalance {
+	return AccountWithBalance{Account: a, Balance: Balance{
+		Current:   a.InitialBalance + sums.Current,
+		Projected: a.InitialBalance + sums.Projected,
+	}}
+}
+
 // Archived reports whether the owner archived the account.
 func (a Account) Archived() bool { return a.ArchivedAt != nil }
 

@@ -16,38 +16,39 @@ import (
 )
 
 type fakeAccounts struct {
-	account         domain.Account
+	account         domain.AccountWithBalance
 	err             error
 	userID, id      string
 	includeArchived bool
+	asOf            domain.Date
 	input           domain.AccountInput
 	patch           domain.AccountPatch
 	deleted         bool
 }
 
-func (f *fakeAccounts) List(_ context.Context, userID string, includeArchived bool) ([]domain.Account, error) {
-	f.userID, f.includeArchived = userID, includeArchived
+func (f *fakeAccounts) List(_ context.Context, userID string, includeArchived bool, asOf domain.Date) ([]domain.AccountWithBalance, error) {
+	f.userID, f.includeArchived, f.asOf = userID, includeArchived, asOf
 	if f.err != nil {
 		return nil, f.err
 	}
 	if f.account.ID == "" {
 		return nil, nil
 	}
-	return []domain.Account{f.account}, nil
+	return []domain.AccountWithBalance{f.account}, nil
 }
 
-func (f *fakeAccounts) Create(_ context.Context, userID string, in domain.AccountInput) (domain.Account, error) {
+func (f *fakeAccounts) Create(_ context.Context, userID string, in domain.AccountInput) (domain.AccountWithBalance, error) {
 	f.userID, f.input = userID, in
 	return f.account, f.err
 }
 
-func (f *fakeAccounts) Get(_ context.Context, userID, id string) (domain.Account, error) {
-	f.userID, f.id = userID, id
+func (f *fakeAccounts) Get(_ context.Context, userID, id string, asOf domain.Date) (domain.AccountWithBalance, error) {
+	f.userID, f.id, f.asOf = userID, id, asOf
 	return f.account, f.err
 }
 
-func (f *fakeAccounts) Update(_ context.Context, userID, id string, p domain.AccountPatch) (domain.Account, error) {
-	f.userID, f.id, f.patch = userID, id, p
+func (f *fakeAccounts) Update(_ context.Context, userID, id string, p domain.AccountPatch, asOf domain.Date) (domain.AccountWithBalance, error) {
+	f.userID, f.id, f.patch, f.asOf = userID, id, p, asOf
 	return f.account, f.err
 }
 
@@ -56,13 +57,13 @@ func (f *fakeAccounts) Delete(_ context.Context, userID, id string) error {
 	return f.err
 }
 
-func sampleCard() domain.Account {
+func sampleCard() domain.AccountWithBalance {
 	limit := int64(500000)
 	return domain.Account{
 		ID: "a1", UserID: "u1", Name: "Card", Type: domain.AccountCreditCard, Currency: "BRL", InitialBalance: -1200,
 		Card:   &domain.CardSettings{ClosingDay: 3, DueDay: 10, Limit: &limit},
 		Source: domain.SourceManual, CreatedAt: t0, UpdatedAt: t0,
-	}
+	}.WithBalance(domain.Balance{Current: -300, Projected: -800})
 }
 
 // serveAccounts routes r through the accounts routes as user u1.
@@ -91,6 +92,7 @@ func TestCreateAccount(t *testing.T) {
 	}, svc.input)
 	assert.Equal(t, map[string]any{
 		"id": "a1", "name": "Card", "type": "credit_card", "currency": "BRL", "initialBalance": float64(-1200),
+		"balance": float64(-1500), "projectedBalance": float64(-2000),
 		"card":   map[string]any{"closingDay": float64(3), "dueDay": float64(10), "limit": float64(500000)},
 		"source": "manual", "archived": false,
 		"createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
@@ -149,9 +151,12 @@ func TestListAccounts(t *testing.T) {
 	list, _ := jsonOf(t, w)["accounts"].([]any)
 	assert.Len(t, list, 1)
 
-	w = serveAccounts(svc, request(http.MethodGet, "/accounts?includeArchived=true", ""))
+	assert.True(t, svc.asOf.IsZero(), "no asOf: the use case picks today")
+
+	w = serveAccounts(svc, request(http.MethodGet, "/accounts?includeArchived=true&asOf=2026-11-30", ""))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.True(t, svc.includeArchived)
+	assert.Equal(t, "2026-11-30", svc.asOf.String())
 
 	w = serveAccounts(svc, request(http.MethodGet, "/accounts?includeArchived=maybe", ""))
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
@@ -170,10 +175,27 @@ func TestListAccounts(t *testing.T) {
 
 func TestGetAccount(t *testing.T) {
 	svc := &fakeAccounts{account: sampleCard()}
-	w := serveAccounts(svc, request(http.MethodGet, "/accounts/a1", ""))
+	w := serveAccounts(svc, request(http.MethodGet, "/accounts/a1?asOf=2026-11-08", ""))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "a1", svc.id)
-	assert.Equal(t, "Card", jsonOf(t, w)["name"])
+	assert.Equal(t, "2026-11-08", svc.asOf.String())
+	body := jsonOf(t, w)
+	assert.Equal(t, "Card", body["name"])
+	assert.Equal(t, float64(-1500), body["balance"])
+	assert.Equal(t, float64(-2000), body["projectedBalance"])
+
+	for _, path := range []string{"/accounts?asOf=tomorrow", "/accounts/a1?asOf=2026-02-30", "/accounts/a1?asOf=2101-01-01"} {
+		svc := &fakeAccounts{account: sampleCard()}
+		method := http.MethodGet
+		w := serveAccounts(svc, request(method, path, ""))
+		require.Equal(t, http.StatusUnprocessableEntity, w.Code, path)
+		p := problemOf(t, w)
+		require.Len(t, p.Errors, 1, path)
+		assert.Equal(t, "asOf", p.Errors[0].Field, path)
+		assert.Empty(t, svc.userID, path)
+	}
+	w = serveAccounts(&fakeAccounts{}, request(http.MethodPatch, "/accounts/a1?asOf=x", `{"name":"x"}`))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 
 	w = serveAccounts(&fakeAccounts{err: domain.ErrNotFound}, request(http.MethodGet, "/accounts/other", ""))
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -218,6 +240,10 @@ func TestDeleteAccount(t *testing.T) {
 
 	w = serveAccounts(&fakeAccounts{err: domain.ErrNotFound}, request(http.MethodDelete, "/accounts/a1", ""))
 	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	w = serveAccounts(&fakeAccounts{err: domain.ErrAccountInUse}, request(http.MethodDelete, "/accounts/a1", ""))
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Equal(t, "account_in_use", problemOf(t, w).Code)
 }
 
 func TestAccountsNeedAPrincipal(t *testing.T) {

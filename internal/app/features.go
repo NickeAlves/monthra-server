@@ -26,10 +26,12 @@ type features struct {
 // user_id registers its eraser (the UserDataEraser contract of CLAUDE.md).
 func newFeatures(db *mongo.Database, logger *slog.Logger, metrics *observability.Metrics) features {
 	accountsStore, categoriesStore := repomongo.NewAccounts(db), repomongo.NewCategories(db)
+	// The transactions hold the balances of the accounts and tell whether
+	// an account or a category is still in use.
 	ledger := repomongo.NewTransactions(db)
-	accountsService := accounts.NewService(accountsStore, accounts.Options{})
+	accountsService := accounts.NewService(accountsStore, ledger, accounts.Options{})
 	// users.categories_seeded_at marks who already got the default set.
-	categoriesService := categories.NewService(categoriesStore, repomongo.NewUsers(db), categories.Options{})
+	categoriesService := categories.NewService(categoriesStore, repomongo.NewUsers(db), ledger, categories.Options{})
 	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore, transactions.Options{Metrics: metrics})
 	return features{
 		routes: []handler.Routes{

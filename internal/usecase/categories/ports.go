@@ -39,3 +39,12 @@ type SeedMarker interface {
 	// twice keeps the first date.
 	MarkCategoriesSeeded(ctx context.Context, userID string, at time.Time) error
 }
+
+// Usage is what the categories need from the transactions.
+type Usage interface {
+	// CategoryInUse reports whether category id of userID has transactions.
+	CategoryInUse(ctx context.Context, userID, id string) (bool, error)
+	// ReassignCategory moves the transactions of userID from category from
+	// to category to.
+	ReassignCategory(ctx context.Context, userID, from, to string, at time.Time) error
+}
