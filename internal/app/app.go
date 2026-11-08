@@ -75,6 +75,30 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	}
 
 	metrics := observability.NewMetrics(version, string(cfg.AppEnv))
+	// Outside local, TLS terminates at the monthra-infra proxy.
+	cookies := cookie.Policy{Secure: !cfg.AppEnv.IsLocal()}
+	keys := cache.NewKeys(cfg.AppEnv)
+	limiter := ratelimit.NewRedis(redisClient)
+
+	mailer, err := newMailer(cfg, logger, metrics)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Runs after the servers stopped, so no request can enqueue anymore.
+		drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)
+		defer cancel()
+		err = errors.Join(err, mailer.Close(drainCtx))
+	}()
+
+	authn, err := newAuth(cfg, logger, metrics, authDeps{
+		db: mongoClient.Database(cfg.Mongo.Database), redis: redisClient, keys: keys,
+		limiter: limiter, mailer: mailer, cookies: cookies,
+	})
+	if err != nil {
+		return err
+	}
+
 	health := handler.NewHealth(logger, readinessTimeout, map[string]handler.Pinger{
 		"mongo": repomongo.Pinger{Client: mongoClient},
 		"redis": cache.Pinger{Client: redisClient},
@@ -89,13 +113,18 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 
 		AllowedOrigins: cfg.Security.Origins(),
 		TrustedProxies: cfg.Security.Prefixes(),
-		// Outside local, TLS terminates at the monthra-infra proxy.
-		Cookies:    cookie.Policy{Secure: !cfg.AppEnv.IsLocal()},
-		CSRFSigner: csrfSigner,
+		Cookies:        cookies,
+		CSRFSigner:     csrfSigner,
 
-		Limiter:     ratelimit.NewRedis(redisClient),
-		Keys:        cache.NewKeys(cfg.AppEnv),
+		Limiter:     limiter,
+		Keys:        keys,
 		APIRateByIP: cfg.RateLimits.APIPerIP,
+
+		Auth:            authn.handler,
+		Authenticator:   authn.authenticator,
+		AuthRateByIP:    cfg.RateLimits.AuthPerIP,
+		RefreshRateByIP: cfg.RateLimits.RefreshPerIP,
+		APIRateByUser:   cfg.RateLimits.APIPerUser,
 	})
 
 	api := apihttp.NewServer(cfg.HTTP.Addr, router, cfg.HTTP, logger)
