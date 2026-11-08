@@ -92,6 +92,8 @@ func TestMetricsExposeHTTPSeries(t *testing.T) {
 	done := m.RequestStarted()
 	m.ObserveHTTP(http.MethodGet, "/healthz", http.StatusOK, 15*time.Millisecond)
 	m.ObserveHTTP(http.MethodGet, "", http.StatusNotFound, time.Millisecond)
+	m.TransactionCreated("expense")
+	m.TransactionCreated("expense")
 	done()
 
 	rec := httptest.NewRecorder()
@@ -104,6 +106,7 @@ func TestMetricsExposeHTTPSeries(t *testing.T) {
 	assert.Contains(t, body, `monthra_http_request_duration_seconds_bucket{method="GET",route="/healthz",le="0.025"} 1`)
 	assert.Contains(t, body, `monthra_http_requests_in_flight 0`)
 	assert.Contains(t, body, `monthra_build_info{env="local",version="v1.2.3"} 1`)
+	assert.Contains(t, body, `monthra_transactions_created_total{kind="expense"} 2`)
 	assert.True(t, strings.Contains(body, "go_goroutines"), "go runtime collector registered")
 	assert.NotNil(t, m.Registry())
 }

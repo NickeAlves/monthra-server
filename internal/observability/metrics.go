@@ -31,6 +31,8 @@ type Metrics struct {
 	mfaEvents      *prometheus.CounterVec
 	emailSent      *prometheus.CounterVec
 	emailDropped   *prometheus.CounterVec
+
+	transactionsCreated *prometheus.CounterVec
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -99,6 +101,11 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "email_dropped_total",
 			Help:      "Transactional emails dropped before delivery because the queue was full or closed, by template.",
 		}, []string{"template"}),
+		transactionsCreated: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "transactions_created_total",
+			Help:      "Transactions created, by kind (expense, income, transfer).",
+		}, []string{"kind"}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "monthra",
@@ -114,6 +121,7 @@ func NewMetrics(version, env string) *Metrics {
 		m.requests, m.duration, m.inFlight, buildInfo,
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
 		m.authLogins, m.refreshReuse, m.passwordResets, m.mfaEvents, m.emailSent, m.emailDropped,
+		m.transactionsCreated,
 	)
 	return m
 }
@@ -164,6 +172,9 @@ func (m *Metrics) EmailSent(template, result string) {
 
 // EmailDropped counts one email dropped before delivery.
 func (m *Metrics) EmailDropped(template string) { m.emailDropped.WithLabelValues(template).Inc() }
+
+// TransactionCreated counts one transaction created, by kind.
+func (m *Metrics) TransactionCreated(kind string) { m.transactionsCreated.WithLabelValues(kind).Inc() }
 
 // Handler serves the registry in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {
