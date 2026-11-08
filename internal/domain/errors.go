@@ -24,6 +24,8 @@ const (
 	CodeTooShort = "too_short"
 	CodeTooLong  = "too_long"
 	CodeBreached = "breached"
+	// CodeOutOfRange is a number outside its bounds (an amount, a day).
+	CodeOutOfRange = "out_of_range"
 )
 
 // FieldError is one invalid input field.
