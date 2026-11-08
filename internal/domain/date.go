@@ -58,6 +58,12 @@ func (d Date) Equal(o Date) bool { return d.t.Equal(o.t) }
 // Day returns the day of the month of d.
 func (d Date) Day() int { return d.t.Day() }
 
+// AddDays returns the day n days later (earlier when n < 0).
+func (d Date) AddDays(n int) Date { return Date{d.t.AddDate(0, 0, n)} }
+
+// daysSince returns how many days d comes after o (negative when before).
+func (d Date) daysSince(o Date) int { return int(d.t.Sub(o.t) / (24 * time.Hour)) }
+
 // AddMonths returns the same day k months later (earlier when k < 0), or
 // the last day of that month when it is shorter: January 31 plus one month
 // is February 28 (29 in a leap year), plus two is March 31.
