@@ -38,6 +38,14 @@ func Indexes() map[string][]mongo.IndexModel {
 		},
 		repo.CollCategories: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}}, Options: options.Index().SetName("categories_user_kind")},
+			// One default category per key and user, so seeding twice (or
+			// concurrently) never duplicates one; categories the owner created
+			// have no default_key and stay out of it.
+			{
+				Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "default_key", Value: 1}},
+				Options: options.Index().SetName("categories_user_default_key_unique").SetUnique(true).
+					SetPartialFilterExpression(bson.D{{Key: "default_key", Value: bson.D{{Key: "$exists", Value: true}}}}),
+			},
 		},
 		repo.CollTransactions: {
 			// _id breaks ties between transactions on the same date for cursor pagination.

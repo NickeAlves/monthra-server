@@ -61,6 +61,10 @@ func TestApplyCreatesIndexesIdempotently(t *testing.T) {
 	require.NotNil(t, users["users_email_unique"].Unique)
 	assert.True(t, *users["users_email_unique"].Unique)
 
+	defaults := indexSpecs(t, db, repo.CollCategories)["categories_user_default_key_unique"]
+	require.NotNil(t, defaults.Unique)
+	assert.True(t, *defaults.Unique, "one default category per key and user")
+
 	budgets := indexSpecs(t, db, repo.CollBudgets)
 	require.NotNil(t, budgets["budgets_user_month_category_unique"].Unique)
 	assert.True(t, *budgets["budgets_user_month_category_unique"].Unique)

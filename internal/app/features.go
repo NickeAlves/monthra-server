@@ -9,6 +9,7 @@ import (
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
 	"github.com/NickeAlves/monthra-server/internal/usecase/accounts"
 	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
+	"github.com/NickeAlves/monthra-server/internal/usecase/categories"
 )
 
 // features is what the domain features (accounts, categories, ...) add to
@@ -23,12 +24,16 @@ type features struct {
 // user_id registers its eraser (the UserDataEraser contract of CLAUDE.md).
 func newFeatures(db *mongo.Database, logger *slog.Logger) features {
 	accountsService := accounts.NewService(repomongo.NewAccounts(db), accounts.Options{})
+	// users.categories_seeded_at marks who already got the default set.
+	categoriesService := categories.NewService(repomongo.NewCategories(db), repomongo.NewUsers(db), categories.Options{})
 	return features{
 		routes: []handler.Routes{
 			&handler.Accounts{Service: accountsService, Logger: logger},
+			&handler.Categories{Service: categoriesService, Logger: logger},
 		},
 		erasers: []authuc.UserDataEraser{
 			repomongo.NewUserEraser(db, repomongo.CollAccounts),
+			repomongo.NewUserEraser(db, repomongo.CollCategories),
 		},
 	}
 }
