@@ -60,9 +60,14 @@ type RouterOptions struct {
 	// APIRateByIP is the baseline budget of /api/v1 per client IP.
 	APIRateByIP config.Rate
 
-	// Auth serves /api/v1/auth/*. Nil leaves those routes out.
+	// Auth serves /api/v1/auth/*. Nil leaves those routes out, and /me too.
 	Auth          *handler.Auth
 	Authenticator middleware.AuthOptions
+	// Me serves /api/v1/me/*. Nil leaves those routes out.
+	Me *handler.Me
+	// Locales gives authenticated answers the caller's stored language. Nil
+	// keeps the Accept-Language one.
+	Locales middleware.LocaleResolver
 	// AuthRateByIP, RefreshRateByIP and APIRateByUser are the budgets of the
 	// credential endpoints, of refreshes and of authenticated requests.
 	AuthRateByIP    config.Rate
@@ -170,11 +175,25 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 			middleware.Authenticate(opts.Authenticator),
 			limit(PolicyAPIByUser, opts.APIRateByUser, middleware.ByUser, true),
 		)
+		if opts.Locales != nil {
+			r.Use(middleware.UserLocale(opts.Locales))
+		}
 		r.Post("/auth/logout", opts.Auth.Logout)
 		r.Post("/auth/mfa/setup", opts.Auth.SetupMFA)
 		r.Post("/auth/mfa/enable", opts.Auth.EnableMFA)
 		r.Post("/auth/mfa/disable", opts.Auth.DisableMFA)
+		if opts.Me != nil {
+			mountMe(r, opts.Me)
+		}
 	})
+}
+
+// mountMe adds the routes of the caller's own account.
+func mountMe(r chi.Router, me *handler.Me) {
+	r.Get("/me", me.Get)
+	r.Patch("/me", me.Update)
+	r.Get("/me/preferences", me.GetPreferences)
+	r.Patch("/me/preferences", me.UpdatePreferences)
 }
 
 func serveOpenAPI(w http.ResponseWriter, _ *http.Request) {

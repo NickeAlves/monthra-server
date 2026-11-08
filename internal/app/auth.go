@@ -22,6 +22,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/ratelimit"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
 	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
+	"github.com/NickeAlves/monthra-server/internal/usecase/profile"
 )
 
 // refreshGrace maps the configured grace to the use case option, where zero
@@ -57,6 +58,8 @@ type authDeps struct {
 
 type authComponents struct {
 	handler       *handler.Auth
+	me            *handler.Me
+	locales       middleware.LocaleResolver
 	authenticator middleware.AuthOptions
 }
 
@@ -93,8 +96,10 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		return authComponents{}, fmt.Errorf("encryption keys: %w", err)
 	}
 
+	users := repomongo.NewUsers(d.db)
+	locales := cache.NewUserLocales(d.redis, d.keys, cache.DefaultLocaleTTL)
 	service := authuc.NewService(authuc.Deps{
-		Users:         repomongo.NewUsers(d.db),
+		Users:         users,
 		Sessions:      repomongo.NewSessions(d.db),
 		RefreshTokens: repomongo.NewRefreshTokens(d.db),
 		AuthTokens:    repomongo.NewAuthTokens(d.db),
@@ -126,8 +131,12 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Logger:        logger,
 	})
 
+	profiles := profile.NewService(users, locales, profile.Options{Logger: logger})
+
 	return authComponents{
 		handler:       &handler.Auth{Service: service, Cookies: d.cookies, Logger: logger},
+		me:            &handler.Me{Profile: profiles, Cookies: d.cookies, Logger: logger},
+		locales:       profiles,
 		authenticator: middleware.AuthOptions{Tokens: tokens, Revocations: revocations, Cookies: d.cookies, Logger: logger},
 	}, nil
 }

@@ -272,13 +272,20 @@ func (h *Auth) deliver(w http.ResponseWriter, r *http.Request, t authuc.Tokens) 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Auth) clearCookies(w http.ResponseWriter) {
-	http.SetCookie(w, h.Cookies.New(cookie.AccessToken, "", cookie.RootPath, true, -time.Second))
-	http.SetCookie(w, h.Cookies.New(cookie.RefreshToken, "", cookie.RefreshPath, true, -time.Second))
+func (h *Auth) clearCookies(w http.ResponseWriter) { clearAuthCookies(w, h.Cookies) }
+
+func (h *Auth) isBrowser(r *http.Request) bool { return isBrowser(r, h.Cookies) }
+
+// clearAuthCookies expires the access and refresh cookies.
+func clearAuthCookies(w http.ResponseWriter, p cookie.Policy) {
+	http.SetCookie(w, p.New(cookie.AccessToken, "", cookie.RootPath, true, -time.Second))
+	http.SetCookie(w, p.New(cookie.RefreshToken, "", cookie.RefreshPath, true, -time.Second))
 }
 
-func (h *Auth) isBrowser(r *http.Request) bool {
-	return r.Header.Get("Origin") != "" || h.Cookies.HasAuth(r)
+// isBrowser reports whether the request comes from a page: it carries an
+// Origin header or ambient auth cookies.
+func isBrowser(r *http.Request, p cookie.Policy) bool {
+	return r.Header.Get("Origin") != "" || p.HasAuth(r)
 }
 
 func (h *Auth) now() time.Time {
@@ -289,8 +296,14 @@ func (h *Auth) now() time.Time {
 }
 
 func (h *Auth) decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeBody(w, r, h.Logger, v)
+}
+
+// decodeBody decodes and validates the JSON body into v, or answers the
+// problem and returns false.
+func decodeBody(w http.ResponseWriter, r *http.Request, logger *slog.Logger, v any) bool {
 	if err := dto.Decode(r, v); err != nil {
-		h.fail(w, r, err)
+		writeError(w, r, logger, err)
 		return false
 	}
 	return true
@@ -298,53 +311,7 @@ func (h *Auth) decode(w http.ResponseWriter, r *http.Request, v any) bool {
 
 // fail maps use case errors to problem responses.
 func (h *Auth) fail(w http.ResponseWriter, r *http.Request, err error) {
-	var (
-		decodeErr *dto.Error
-		invalid   *domain.ValidationError
-		limited   *authuc.RateLimitedError
-	)
-	switch {
-	case errors.As(err, &decodeErr):
-		writeFieldProblem(w, r, decodeErr.Status, decodeErr.Key, decodeErr.Fields)
-	case errors.As(err, &invalid):
-		writeFieldProblem(w, r, http.StatusUnprocessableEntity, i18n.ErrValidationFailed, invalid.Fields)
-	case errors.As(err, &limited):
-		middleware.WriteRateLimited(w, r, limited.RetryAfter)
-	case errors.Is(err, authuc.ErrInvalidCredentials):
-		problem.Write(w, r, http.StatusUnauthorized, i18n.ErrInvalidCredentials)
-	case errors.Is(err, authuc.ErrUnauthorized):
-		problem.Write(w, r, http.StatusUnauthorized, i18n.ErrUnauthorized)
-	case errors.Is(err, authuc.ErrEmailNotVerified):
-		problem.Write(w, r, http.StatusForbidden, i18n.ErrEmailNotVerified)
-	case errors.Is(err, authuc.ErrCaptchaRequired):
-		problem.Write(w, r, http.StatusForbidden, i18n.ErrCaptchaRequired)
-	case errors.Is(err, authuc.ErrCaptchaInvalid):
-		problem.Write(w, r, http.StatusForbidden, i18n.ErrCaptchaInvalid)
-	case errors.Is(err, authuc.ErrTokenInvalid):
-		problem.Write(w, r, http.StatusBadRequest, i18n.ErrTokenInvalid)
-	case errors.Is(err, authuc.ErrRefreshConflict):
-		problem.Write(w, r, http.StatusConflict, i18n.ErrRefreshConflict)
-	// 403, not 401: the session is fine, only the step-up or the code failed,
-	// and a 401 would make clients refresh or sign out.
-	case errors.Is(err, authuc.ErrPasswordIncorrect):
-		problem.Write(w, r, http.StatusForbidden, i18n.ErrPasswordIncorrect)
-	case errors.Is(err, authuc.ErrMFACodeInvalid):
-		problem.Write(w, r, http.StatusForbidden, i18n.ErrMFACodeInvalid)
-	case errors.Is(err, authuc.ErrMFAChallengeInvalid):
-		problem.Write(w, r, http.StatusUnauthorized, i18n.ErrMFAChallengeInvalid)
-	case errors.Is(err, authuc.ErrMFAAlreadyEnabled):
-		problem.Write(w, r, http.StatusConflict, i18n.ErrMFAAlreadyEnabled)
-	case errors.Is(err, authuc.ErrMFANotEnabled):
-		problem.Write(w, r, http.StatusConflict, i18n.ErrMFANotEnabled)
-	case errors.Is(err, authuc.ErrMFASetupRequired):
-		problem.Write(w, r, http.StatusConflict, i18n.ErrMFASetupRequired)
-	case errors.Is(err, authuc.ErrUnavailable):
-		h.Logger.ErrorContext(r.Context(), "auth dependency unavailable", slog.String("error", err.Error()))
-		problem.Write(w, r, http.StatusServiceUnavailable, i18n.ErrServiceUnavailable)
-	default:
-		h.Logger.ErrorContext(r.Context(), "auth request failed", slog.String("error", err.Error()))
-		problem.Write(w, r, http.StatusInternalServerError, i18n.ErrInternal)
-	}
+	writeError(w, r, h.Logger, err)
 }
 
 func writeFieldProblem(w http.ResponseWriter, r *http.Request, status int, key i18n.Key, fields []domain.FieldError) {

@@ -122,6 +122,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 
 		Auth:            authn.handler,
 		Authenticator:   authn.authenticator,
+		Me:              authn.me,
+		Locales:         authn.locales,
 		AuthRateByIP:    cfg.RateLimits.AuthPerIP,
 		RefreshRateByIP: cfg.RateLimits.RefreshPerIP,
 		APIRateByUser:   cfg.RateLimits.APIPerUser,
