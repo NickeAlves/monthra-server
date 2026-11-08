@@ -47,6 +47,7 @@ func newFeatures(db *mongo.Database, logger *slog.Logger, metrics *observability
 			&handler.Accounts{Service: accountsService, Logger: logger},
 			&handler.Categories{Service: categoriesService, Logger: logger},
 			&handler.Transactions{Service: transactionsService, Logger: logger},
+			&handler.Recurrences{Service: recurrencesService, Logger: logger},
 		},
 		// Recurrences first, so no read during the deletion creates
 		// occurrences again; then transactions: a deletion interrupted

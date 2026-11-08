@@ -99,7 +99,7 @@ func TestCreateTransaction(t *testing.T) {
 		"id": "t1", "kind": "transfer", "accountId": "a1", "currency": "BRL", "categoryId": nil,
 		"toAccountId": "a2", "toCurrency": "USD", "amount": float64(100000), "toAmount": float64(19000),
 		"date": "2026-11-08", "invoiceMonth": nil, "toInvoiceMonth": nil, "description": "Trip money",
-		"tags": []any{"travel"}, "installment": nil, "source": "manual", "createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
+		"tags": []any{"travel"}, "installment": nil, "recurrence": nil, "source": "manual", "createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z",
 	}, jsonOf(t, w), "no owner id and no search field in the answer")
 }
 
@@ -164,6 +164,26 @@ func TestTransactionInstallments(t *testing.T) {
 	w = serveTransactions(svc, request(http.MethodGet, "/transactions?installmentGroupId=g1", ""))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "g1", svc.query.Filter.InstallmentGroupID)
+}
+
+func TestTransactionOccurrences(t *testing.T) {
+	tx := sampleTransfer(t)
+	tx.Recurrence = &domain.RecurrenceLink{ID: "r1", Date: day(t, "2026-11-05")}
+	svc := &fakeTransactions{tx: tx}
+	w := serveTransactions(svc, request(http.MethodGet, "/transactions/t1", ""))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, map[string]any{"id": "r1", "occurrenceDate": "2026-11-05"}, jsonOf(t, w)["recurrence"])
+
+	w = serveTransactions(svc, request(http.MethodGet, "/transactions?recurrenceId=r1&asOf=2026-11-09", ""))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "r1", svc.query.Filter.RecurrenceID)
+	assert.Equal(t, "2026-11-09", svc.query.AsOf.String(), "the occurrences are created up to the reader's today")
+
+	svc = &fakeTransactions{}
+	w = serveTransactions(svc, request(http.MethodGet, "/transactions?asOf=tomorrow", ""))
+	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	assert.Equal(t, "asOf", problemOf(t, w).Errors[0].Field)
+	assert.Empty(t, svc.userID)
 }
 
 func TestTransactionViewOfAnExpense(t *testing.T) {
