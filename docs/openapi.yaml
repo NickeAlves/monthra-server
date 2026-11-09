@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -247,6 +247,21 @@ info:
       something left) or `carried_over` (the next invoice closed with what it left).
     - Closing and due days come from the card's current settings.
 
+    ## Dashboard (`/api/v1/dashboard/summary`)
+
+    - One month by currency, with no conversion: `income` and `expense` add up the whole
+      month, the days still to come included (an installment later in the month); transfers
+      are neither. `scheduled` is what the recurrences are still to create in the month.
+    - `balance` is the net worth on `asOf`: the month's last day, or the reader's today when
+      that comes first. A card's debt counts against it; archived accounts count. The
+      initial balances count in every month, as on `/accounts?asOf`.
+    - `history` holds the 12 months up to `month`, oldest first; `netWorth` is null for a
+      month after `asOf`.
+    - Accounts and categories come as ids: their names, icons and colors come from
+      `/accounts` and `/categories`.
+    - Summaries are cached for 5 minutes and every write to the caller's data drops them, so
+      a change shows on the next read.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
@@ -276,6 +291,8 @@ tags:
     description: The invoices of the caller's credit cards
   - name: recurrences
     description: The caller's recurring transactions and their occurrences
+  - name: dashboard
+    description: The caller's monthly summary
 paths:
   /healthz:
     get:
@@ -1796,6 +1813,49 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/dashboard/summary:
+    get:
+      tags: [dashboard]
+      summary: Summarize a month
+      description: |
+        The caller's month by currency: income, expense and net of the whole month, what the
+        recurrences are still to create in it, expenses and income by category, the net worth
+        and each account's balance on `asOf`, and 12 months of history. The occurrences of the
+        recurrences due up to the reader's today are created first.
+      operationId: dashboardSummary
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: The month summed; the month of the reader's today by default.
+          schema:
+            $ref: "#/components/schemas/Month"
+        - name: asOf
+          in: query
+          required: false
+          description: |
+            The client's local today, held within a day of today in UTC. Today in UTC when
+            absent.
+          schema:
+            $ref: "#/components/schemas/Date"
+      responses:
+        "200":
+          description: "The summary (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Summary"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     AsOf:
@@ -2925,6 +2985,116 @@ components:
         nextCursor:
           type: [string, "null"]
           description: Pass it as `cursor` for the next page; null on the last one.
+    Summary:
+      type: object
+      required: [month, asOf, currencies, accounts]
+      properties:
+        month:
+          $ref: "#/components/schemas/Month"
+        asOf:
+          $ref: "#/components/schemas/Date"
+          description: The day the balances count up to.
+        currencies:
+          type: array
+          description: One per currency of the caller's accounts, alphabetically.
+          items:
+            $ref: "#/components/schemas/CurrencySummary"
+        accounts:
+          type: array
+          description: Every account (archived ones included), oldest first.
+          items:
+            $ref: "#/components/schemas/AccountBalance"
+    CurrencySummary:
+      type: object
+      required: [currency, income, expense, net, scheduled, balance, expensesByCategory, incomeByCategory, history]
+      description: Amounts in minor units of `currency`.
+      properties:
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        income:
+          type: integer
+          format: int64
+        expense:
+          type: integer
+          format: int64
+        net:
+          type: integer
+          format: int64
+          description: "`income - expense`."
+        scheduled:
+          type: object
+          required: [income, expense]
+          description: What the recurrences are still to create in the month.
+          properties:
+            income:
+              type: integer
+              format: int64
+            expense:
+              type: integer
+              format: int64
+        balance:
+          type: integer
+          format: int64
+          description: The net worth on `asOf`.
+        expensesByCategory:
+          type: array
+          description: The largest first.
+          items:
+            $ref: "#/components/schemas/CategoryTotal"
+        incomeByCategory:
+          type: array
+          description: The largest first.
+          items:
+            $ref: "#/components/schemas/CategoryTotal"
+        history:
+          type: array
+          minItems: 12
+          maxItems: 12
+          description: The 12 months up to `month`, oldest first.
+          items:
+            $ref: "#/components/schemas/SummaryPoint"
+    CategoryTotal:
+      type: object
+      required: [categoryId, amount, count]
+      properties:
+        categoryId:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        count:
+          type: integer
+          description: How many transactions.
+    SummaryPoint:
+      type: object
+      required: [month, income, expense, netWorth]
+      properties:
+        month:
+          $ref: "#/components/schemas/Month"
+        income:
+          type: integer
+          format: int64
+        expense:
+          type: integer
+          format: int64
+        netWorth:
+          type: [integer, "null"]
+          format: int64
+          description: The balance at the end of the month (on `asOf` in its month); null after `asOf`.
+    AccountBalance:
+      type: object
+      required: [accountId, currency, balance]
+      properties:
+        accountId:
+          type: string
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        balance:
+          type: integer
+          format: int64
+          description: On `asOf`, in minor units of `currency`.
     Invoice:
       type: object
       required: [month, closingDate, dueDate, status, currency, previousBalance, charges, credits, total, paid, remaining]
