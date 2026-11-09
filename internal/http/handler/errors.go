@@ -75,6 +75,8 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 		problem.Write(w, r, http.StatusConflict, i18n.ErrUsedByRecurrence)
 	case errors.Is(err, domain.ErrBudgetExists):
 		problem.Write(w, r, http.StatusConflict, i18n.ErrBudgetExists)
+	case errors.Is(err, domain.ErrExceedsPosition):
+		problem.Write(w, r, http.StatusConflict, i18n.ErrExceedsPosition)
 	case errors.Is(err, authuc.ErrUnavailable):
 		logger.ErrorContext(r.Context(), "auth dependency unavailable", slog.String("error", err.Error()))
 		problem.Write(w, r, http.StatusServiceUnavailable, i18n.ErrServiceUnavailable)

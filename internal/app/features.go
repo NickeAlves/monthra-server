@@ -17,6 +17,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/usecase/budgets"
 	"github.com/NickeAlves/monthra-server/internal/usecase/categories"
 	"github.com/NickeAlves/monthra-server/internal/usecase/dashboard"
+	"github.com/NickeAlves/monthra-server/internal/usecase/investments"
 	"github.com/NickeAlves/monthra-server/internal/usecase/recurrences"
 	"github.com/NickeAlves/monthra-server/internal/usecase/transactions"
 )
@@ -39,6 +40,7 @@ type featureServices struct {
 	transactions *transactions.Service
 	recurrences  *recurrences.Service
 	budgets      *budgets.Service
+	investments  *investments.Service
 }
 
 // featureDeps is what the domain features are built on.
@@ -91,6 +93,11 @@ func newFeatures(d featureDeps) features {
 	// The budgets read what was spent after the recurrences create their
 	// occurrences, so they come after them (the alerts came before).
 	budgetsService := budgets.NewService(budgetsStore, users, categoriesStore, ledger, recurrencesService, budgets.Options{})
+	// The portfolio stands apart from the accounts; only its income counts
+	// on the dashboard.
+	investmentsStore, movementsStore := repomongo.NewInvestments(db), repomongo.NewInvestmentMovements(db)
+	investmentsService := investments.NewService(investmentsStore, movementsStore, accountsStore, categoriesStore,
+		investments.Options{AfterWrite: hooks, Metrics: metrics})
 	return features{
 		routes: []handler.Routes{
 			&handler.Accounts{Service: accountsService, Logger: logger},
@@ -99,6 +106,7 @@ func newFeatures(d featureDeps) features {
 			&handler.Recurrences{Service: recurrencesService, Logger: logger},
 			&handler.Dashboard{Service: dashboardService, Logger: logger},
 			&handler.Budgets{Service: budgetsService, Logger: logger},
+			&handler.Investments{Service: investmentsService, Logger: logger},
 		},
 		// Recurrences first, so no read during the deletion creates
 		// occurrences again; then transactions: a deletion interrupted
@@ -107,8 +115,12 @@ func newFeatures(d featureDeps) features {
 		erasers: []authuc.UserDataEraser{
 			repomongo.NewUserEraser(db, repomongo.CollRecurrences),
 			repomongo.NewUserEraser(db, repomongo.CollTransactions),
-			// Budgets before the categories they name.
+			// Budgets before the categories they name; the movements (whose
+			// income names categories) before their investments (which name
+			// accounts).
 			repomongo.NewUserEraser(db, repomongo.CollBudgets),
+			repomongo.NewUserEraser(db, repomongo.CollInvestmentMovements),
+			repomongo.NewUserEraser(db, repomongo.CollInvestments),
 			repomongo.NewUserEraser(db, repomongo.CollAccounts),
 			repomongo.NewUserEraser(db, repomongo.CollCategories),
 			// The summaries cached under the dropped version are never read
@@ -118,6 +130,7 @@ func newFeatures(d featureDeps) features {
 		services: featureServices{
 			accounts: accountsService, categories: categoriesService,
 			transactions: transactionsService, recurrences: recurrencesService, budgets: budgetsService,
+			investments: investmentsService,
 		},
 	}
 }
