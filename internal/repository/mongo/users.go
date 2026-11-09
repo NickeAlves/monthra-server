@@ -196,6 +196,49 @@ func (r *Users) MarkCategoriesSeeded(ctx context.Context, id string, at time.Tim
 	return nil
 }
 
+// BudgetsRolledThrough returns the latest month the budgets of account id
+// were carried over to (budgets_rolled_through), or the zero Month when
+// they never were. An account that does not exist answers domain.MaxMonth,
+// as if every month were done, so nothing is ever written for an account
+// being erased.
+func (r *Users) BudgetsRolledThrough(ctx context.Context, id string) (domain.Month, error) {
+	oid, err := objectID(id)
+	if err != nil {
+		return domain.MaxMonth, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	var doc struct {
+		RolledThrough string `bson:"budgets_rolled_through"`
+	}
+	opts := options.FindOne().SetProjection(bson.D{{Key: "budgets_rolled_through", Value: 1}})
+	err = r.coll.FindOne(ctx, bson.D{{Key: "_id", Value: oid}}, opts).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return domain.MaxMonth, nil
+	}
+	if err != nil {
+		return domain.Month{}, fmt.Errorf("find user: %w", err)
+	}
+	return storedMonth(doc.RolledThrough), nil
+}
+
+// MarkBudgetsRolled records that the budgets of account id were carried
+// over through month m. The mark only moves forward ($max: "YYYY-MM" sorts
+// as the months do), so concurrent rollovers agree, and marking an account
+// that is gone does nothing.
+func (r *Users) MarkBudgetsRolled(ctx context.Context, id string, m domain.Month) error {
+	oid, err := objectID(id)
+	if err != nil {
+		return nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	_, err = r.coll.UpdateOne(ctx,
+		bson.D{{Key: "_id", Value: oid}},
+		bson.D{{Key: "$max", Value: bson.D{{Key: "budgets_rolled_through", Value: m.String()}}}},
+	)
+	if err != nil {
+		return fmt.Errorf("mark budgets rolled: %w", err)
+	}
+	return nil
+}
+
 // Delete removes the account. Deleting an account that is already gone is
 // not an error, so an interrupted erasure can run again.
 func (r *Users) Delete(ctx context.Context, id string) error {
