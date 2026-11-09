@@ -17,6 +17,7 @@ type Service struct {
 	store       Store
 	ledger      Ledger
 	recurrences Recurrences
+	investments Investments
 	afterWrite  WriteHook
 	now         func() time.Time
 	max         int
@@ -30,6 +31,8 @@ type Options struct {
 	MaxAccounts int
 	// Recurrences defaults to no recurrences.
 	Recurrences Recurrences
+	// Investments defaults to no investments.
+	Investments Investments
 	// AfterWrite is told of every write; it defaults to none.
 	AfterWrite WriteHook
 }
@@ -37,6 +40,10 @@ type Options struct {
 type noHook struct{}
 
 func (noHook) AfterWrite(context.Context, string) {}
+
+type noInvestments struct{}
+
+func (noInvestments) UnlinkAccount(context.Context, string, string, time.Time) error { return nil }
 
 type noRecurrences struct{}
 
@@ -56,11 +63,14 @@ func NewService(store Store, ledger Ledger, o Options) *Service {
 	if o.Recurrences == nil {
 		o.Recurrences = noRecurrences{}
 	}
+	if o.Investments == nil {
+		o.Investments = noInvestments{}
+	}
 	if o.AfterWrite == nil {
 		o.AfterWrite = noHook{}
 	}
 	return &Service{
-		store: store, ledger: ledger, recurrences: o.Recurrences, afterWrite: o.AfterWrite,
+		store: store, ledger: ledger, recurrences: o.Recurrences, investments: o.Investments, afterWrite: o.AfterWrite,
 		now: o.Now, max: o.MaxAccounts,
 	}
 }
@@ -253,6 +263,11 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 		return domain.ErrUsedByRecurrence
 	}
 	defer s.afterWrite.AfterWrite(ctx, userID)
+	// The investments kept at it stay, with no account: the link only
+	// groups them. A retry after a failure below unlinks nothing more.
+	if err := s.investments.UnlinkAccount(ctx, userID, id, s.clock()); err != nil {
+		return fmt.Errorf("unlink investments: %w", err)
+	}
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}

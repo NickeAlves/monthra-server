@@ -39,6 +39,7 @@ const (
 	ErrCategoryInUse    Key = "category_in_use"
 	ErrUsedByRecurrence Key = "used_by_recurrence"
 	ErrBudgetExists     Key = "budget_exists"
+	ErrExceedsPosition  Key = "exceeds_position"
 )
 
 // Message is a translated title and detail.
@@ -199,6 +200,11 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Orçamento já existe", "Esta categoria já tem um orçamento neste mês. Altere o limite dele em vez de criar outro."},
 		EsES: {"El presupuesto ya existe", "Esta categoría ya tiene un presupuesto este mes. Cambia su límite en lugar de crear otro."},
 		EnUS: {"Budget already exists", "This category already has a budget this month. Change its limit instead of creating another."},
+	},
+	ErrExceedsPosition: {
+		PtBR: {"Posição insuficiente", "Sem este movimento, uma venda posterior venderia mais unidades do que havia. Ajuste ou apague a venda antes."},
+		EsES: {"Posición insuficiente", "Sin este movimiento, una venta posterior vendería más unidades de las que había. Ajusta o borra la venta antes."},
+		EnUS: {"Not enough units", "Without this movement, a later sale would sell more units than were held. Change or delete that sale first."},
 	},
 }
 

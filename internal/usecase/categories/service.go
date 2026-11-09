@@ -20,6 +20,7 @@ type Service struct {
 	marker      SeedMarker
 	usage       Usage
 	recurrences Usage
+	investments Usage
 	budgets     Budgets
 	afterWrite  WriteHook
 	now         func() time.Time
@@ -35,6 +36,9 @@ type Options struct {
 	// Recurrences are the other records that name categories; nil names
 	// none.
 	Recurrences Usage
+	// Investments are the movements whose income names categories; nil
+	// names none.
+	Investments Usage
 	// Budgets are dropped with their category; nil holds none.
 	Budgets Budgets
 	// AfterWrite is told when a deletion moves transactions to another
@@ -68,6 +72,9 @@ func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service
 	if o.Recurrences == nil {
 		o.Recurrences = noUsage{}
 	}
+	if o.Investments == nil {
+		o.Investments = noUsage{}
+	}
 	if o.Budgets == nil {
 		o.Budgets = noBudgets{}
 	}
@@ -75,7 +82,8 @@ func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service
 		o.AfterWrite = noHook{}
 	}
 	return &Service{
-		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, budgets: o.Budgets, afterWrite: o.AfterWrite,
+		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, investments: o.Investments,
+		budgets: o.Budgets, afterWrite: o.AfterWrite,
 		now: o.Now, max: o.MaxCategories,
 	}
 }
@@ -195,7 +203,12 @@ func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) err
 		for _, check := range []struct {
 			usage Usage
 			err   error
-		}{{s.usage, domain.ErrCategoryInUse}, {s.recurrences, domain.ErrUsedByRecurrence}} {
+		}{
+			{s.usage, domain.ErrCategoryInUse},
+			{s.recurrences, domain.ErrUsedByRecurrence},
+			// An investment's income is history like a transaction.
+			{s.investments, domain.ErrCategoryInUse},
+		} {
 			inUse, err := check.usage.CategoryInUse(ctx, userID, id)
 			if err != nil {
 				return fmt.Errorf("check category use: %w", err)
@@ -226,14 +239,17 @@ func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) err
 	return nil
 }
 
-// reassign moves the transactions and the recurrences of category from to
-// category to.
+// reassign moves the transactions, the recurrences and the investments'
+// income of category from to category to.
 func (s *Service) reassign(ctx context.Context, userID, from, to string, at time.Time) error {
 	if err := s.usage.ReassignCategory(ctx, userID, from, to, at); err != nil {
 		return fmt.Errorf("move transactions: %w", err)
 	}
 	if err := s.recurrences.ReassignCategory(ctx, userID, from, to, at); err != nil {
 		return fmt.Errorf("move recurrences: %w", err)
+	}
+	if err := s.investments.ReassignCategory(ctx, userID, from, to, at); err != nil {
+		return fmt.Errorf("move investment income: %w", err)
 	}
 	return nil
 }

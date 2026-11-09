@@ -287,6 +287,41 @@ func TestDeleteRefusesAnAccountInUse(t *testing.T) {
 	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a1"), ledger.err)
 }
 
+// fakeInvestments records the accounts unlinked.
+type fakeInvestments struct {
+	unlinked []string
+	err      error
+}
+
+func (f *fakeInvestments) UnlinkAccount(_ context.Context, userID, accountID string, _ time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.unlinked = append(f.unlinked, userID+"/"+accountID)
+	return nil
+}
+
+func TestDeleteUnlinksInvestments(t *testing.T) {
+	store := newMemStore()
+	ledger := &fakeLedger{inUse: map[string]bool{"a1": true}}
+	invs := &fakeInvestments{}
+	svc := NewService(store, ledger, Options{Investments: invs})
+	ctx := context.Background()
+	for _, name := range []string{"A", "B", "C"} {
+		_, err := svc.Create(ctx, "u1", checking(name))
+		require.NoError(t, err)
+	}
+
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a1"), domain.ErrAccountInUse)
+	assert.Empty(t, invs.unlinked, "an account kept keeps its investments")
+	require.NoError(t, svc.Delete(ctx, "u1", "a2"))
+	assert.Equal(t, []string{"u1/a2"}, invs.unlinked)
+
+	invs.err = errors.New("mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", "a3"), "unlink investments: mongo down")
+	assert.Contains(t, store.accounts, "a3", "not deleted: a retry completes it")
+}
+
 func names(list []domain.AccountWithBalance) []string {
 	out := make([]string, len(list))
 	for i, a := range list {

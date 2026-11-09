@@ -75,6 +75,8 @@ func TestApplyCreatesIndexesIdempotently(t *testing.T) {
 		"transactions_user_recurrence_date_id":         repo.CollTransactions,
 		"transactions_recurrence_occurrence_unique":    repo.CollTransactions,
 		"recurrences_user_next":                        repo.CollRecurrences,
+		"investment_movements_user_income_date":        repo.CollInvestmentMovements,
+		"investment_movements_user_category":           repo.CollInvestmentMovements,
 	} {
 		raw, err := db.Collection(coll).Indexes().List(ctx)
 		require.NoError(t, err)
@@ -162,9 +164,17 @@ func TestApplyDropsObsoleteIndexes(t *testing.T) {
 	_, err = db.Collection(repo.CollRecurrences).Indexes().CreateOne(ctx,
 		mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("recurrences_user")})
 	require.NoError(t, err)
+	_, err = db.Collection(repo.CollInvestmentMovements).Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "investment_id", Value: 1}, {Key: "date", Value: -1}},
+		Options: options.Index().SetName("investment_movements_user_investment_date"),
+	})
+	require.NoError(t, err)
 
 	require.NoError(t, Apply(ctx, db, Options{AuditLogTTL: time.Hour}))
 	assert.NotContains(t, indexSpecs(t, db, repo.CollRecurrences), "recurrences_user")
+	movements := indexSpecs(t, db, repo.CollInvestmentMovements)
+	assert.NotContains(t, movements, "investment_movements_user_investment_date")
+	assert.Contains(t, movements, "investment_movements_user_investment_date_id")
 	specs := indexSpecs(t, db, repo.CollTransactions)
 	assert.NotContains(t, specs, "transactions_user_account_date")
 	assert.NotContains(t, specs, "transactions_user_category_date")
