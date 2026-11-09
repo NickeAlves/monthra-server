@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -259,6 +259,9 @@ info:
       month after `asOf`.
     - Accounts and categories come as ids: their names, icons and colors come from
       `/accounts` and `/categories`.
+    - The income of the investments (`income` movements) counts in `income` and
+      `incomeByCategory` of its month, under its category; the portfolio itself counts in no
+      `balance` and no `netWorth`.
     - Summaries are cached for 5 minutes and every write to the caller's data drops them, so
       a change shows on the next read.
 
@@ -282,6 +285,46 @@ info:
       budget or changing its limit is silent, and raising the limit rearms the alerts. The
       email names no category and links to `/budgets?month=YYYY-MM` on the web app.
     - Deleting a category deletes its budgets in every month.
+
+    ## Investments (`/api/v1/investments`)
+
+    - The portfolio stands apart from the accounts: no movement changes an account's
+      balance. An investment may name the account it is kept at (`accountId`, one of the
+      caller's in the same currency, not a credit card), for grouping only; deleting that
+      account leaves the investment with no account.
+    - `type` is `fixed_income`, `stock`, `real_estate_fund`, `etf`, `crypto`, `fund`,
+      `pension` or `other`. `mode` tells how the position is tracked, and never changes (nor
+      does `currency`): `units` (a quantity at the last price; the default for stock,
+      real_estate_fund, etf and crypto) or `value` (money in and out, and the value read on a
+      statement; the default for the rest).
+    - Quantities and prices are **decimal strings** with up to 8 places, never numbers:
+      `"0.01234567"`, `"38.42"`. A price is in major units per unit (a unit may be worth a
+      fraction of a cent); every other amount is an integer in minor units, as elsewhere.
+    - Movements (`/investments/{id}/movements`), up to the reader's today (`asOf`):
+
+      | type | units | value |
+      |---|---|---|
+      | `buy` | `quantity`, `amount` (before fees), `fees?` | `amount`, `fees?` |
+      | `sell` | `quantity`, `amount`, `fees?` | `amount`, `fees?` |
+      | `income` | `amount`, `categoryId` | `amount`, `categoryId` |
+      | `fee` | `amount` | `amount` |
+      | `valuation` | `price` | `amount` (the position's value) |
+
+      A field the type does not take is `invalid`; in answers it is null. `type` never
+      changes.
+    - The position replays the movements by day (within a day: buys, sales, income, fees,
+      then valuations, the day's close). Units: the average cost includes the buys' fees, a
+      sale takes its share of it and realizes the rest (less its fees), the last price is the
+      latest valuation or trade (`amount / quantity`). Value: a sale takes the cost in
+      proportion to the value; redeeming the value or more closes the position. `income` and
+      `fee` count in the return only. `returnBps` is `totalReturn / contributed` in basis
+      points (a simple return).
+    - A sale of more units than held on its day is refused (`quantity: exceeds_position`), and
+      so is a change or deletion that leaves a later sale uncovered (`409 exceeds_position`
+      on a deletion).
+    - `income` counts as income of its month on the dashboard; its category is in use
+      (`409 category_in_use`) until `reassignTo` moves it.
+    - Up to 200 investments (`409 limit_reached`) and 5000 movements each.
 
     ## Rate limits
 
@@ -316,6 +359,8 @@ tags:
     description: The caller's monthly summary
   - name: budgets
     description: The caller's monthly budgets by expense category, and their alerts
+  - name: investments
+    description: The caller's portfolio, its movements and positions
 paths:
   /healthz:
     get:
@@ -1131,7 +1176,7 @@ paths:
         Deletes an account without transactions for good. An account with transactions (as
         their account or as the destination of a transfer) answers `409 account_in_use`:
         archive it to keep its history. One a recurrence names, even an ended one, answers
-        `409 used_by_recurrence`.
+        `409 used_by_recurrence`. The investments kept at it stay, with no account.
       operationId: deleteAccount
       security:
         - bearerAuth: []
@@ -2058,6 +2103,352 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/investments:
+    get:
+      tags: [investments]
+      summary: List the portfolio
+      description: |
+        Every investment of the caller, oldest first, with its position, and the totals by
+        currency (no conversion) with the value by type.
+      operationId: listInvestments
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The portfolio (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Portfolio"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [investments]
+      summary: Create an investment
+      description: |
+        `accountId`, when given, names one of the caller's accounts in the same currency, not
+        a credit card and not archived (`invalid`, `currency_mismatch`, `archived`).
+      operationId: createInvestment
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvestmentCreate"
+      responses:
+        "201":
+          description: Created, with an empty position.
+          headers:
+            Location:
+              description: The path of the new investment.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Investment"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/LimitReached"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/investments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [investments]
+      summary: Read an investment
+      operationId: getInvestment
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The investment with its position (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Investment"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [investments]
+      summary: Change an investment
+      description: |
+        `""` clears the ticker or the account. `mode` and `currency` are not fields: sending
+        them answers `400`. Only an account the patch moves to is checked.
+      operationId: updateInvestment
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvestmentPatch"
+      responses:
+        "200":
+          description: The investment after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Investment"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [investments]
+      summary: Delete an investment
+      description: Deletes the investment and its movements; their income leaves the dashboard.
+      operationId: deleteInvestment
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/investments/{id}/movements:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [investments]
+      summary: List the movements of an investment
+      description: Newest day first, then the newest movement, in pages.
+      operationId: listMovements
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/MovementType"
+        - name: limit
+          in: query
+          required: false
+          description: 1 to 100; 50 by default.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "One page (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MovementPage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [investments]
+      summary: Record a movement
+      description: |
+        The fields depend on `type` and on the investment's `mode` (see the table above). The
+        day is at most the reader's today (`date: out_of_range`). A sale of more units than
+        held on its day answers `quantity: exceeds_position`; a sum past its bounds
+        `amount: out_of_range`. An `income` needs an income category of the caller
+        (`categoryId: invalid`, `kind_mismatch`).
+      operationId: createMovement
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MovementCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The path of the new movement.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Movement"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/LimitReached"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/investments/{id}/movements/{movementId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: movementId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [investments]
+      summary: Read a movement
+      description: Only through its own investment; any other answers `404`.
+      operationId: getMovement
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "The movement (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Movement"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [investments]
+      summary: Change a movement
+      description: |
+        The fields its type takes; `type` is not a field (`400`). A change that leaves a later
+        sale with more units than held answers `quantity: exceeds_position`.
+      operationId: updateMovement
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MovementPatch"
+      responses:
+        "200":
+          description: The movement after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Movement"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [investments]
+      summary: Delete a movement
+      operationId: deleteMovement
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ExceedsPosition"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     AsOf:
@@ -2180,8 +2571,10 @@ components:
       description: |
         Invalid fields (`validation_failed`), listed in `errors` with codes `required`,
         `invalid`, `too_short`, `too_long`, `out_of_range` (an amount or a day outside its
-        bounds), `breached`, `archived` (an archived account takes no new transactions) or
-        `kind_mismatch` (a category of the other kind). Nested fields are dotted
+        bounds), `breached`, `archived` (an archived account takes no new transactions),
+        `kind_mismatch` (a category of the other kind), `currency_mismatch` (an account in
+        another currency) or `exceeds_position` (a sale of more units than held). Nested fields
+        are dotted
         (`card.closingDay`).
       content:
         application/problem+json:
@@ -2211,8 +2604,8 @@ components:
             $ref: "#/components/schemas/Problem"
     CategoryInUse:
       description: |
-        The category has transactions (`category_in_use`) or a recurrence names it
-        (`used_by_recurrence`); pass `reassignTo` to move them.
+        The category has transactions or investment income (`category_in_use`), or a
+        recurrence names it (`used_by_recurrence`); pass `reassignTo` to move them.
       content:
         application/problem+json:
           schema:
@@ -2227,6 +2620,14 @@ components:
             $ref: "#/components/schemas/Problem"
     BudgetExists:
       description: The category already has a budget in the month (`budget_exists`); change its limit instead.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ExceedsPosition:
+      description: |
+        Without the movement, a later sale would sell more units than held
+        (`exceeds_position`): change or delete that sale first.
       content:
         application/problem+json:
           schema:
@@ -3470,6 +3871,284 @@ components:
           description: By currency, in alphabetical order.
           items:
             $ref: "#/components/schemas/BudgetTotal"
+    Decimal:
+      type: string
+      pattern: "^[0-9]{1,11}(\\.[0-9]{1,8})?$"
+      description: A non-negative decimal with up to 8 places, never a number; at most 10000000000.
+      examples: ["0.01234567", "38.42"]
+    InvestmentType:
+      type: string
+      enum: [fixed_income, stock, real_estate_fund, etf, crypto, fund, pension, other]
+    InvestmentCreate:
+      type: object
+      additionalProperties: false
+      required: [name, type, currency]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        type:
+          $ref: "#/components/schemas/InvestmentType"
+        mode:
+          type: string
+          enum: [units, value]
+          description: Units for stock, real_estate_fund, etf and crypto by default; value for the rest.
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        ticker:
+          type: string
+          maxLength: 20
+          description: Stored in upper case; letters, digits, dots and dashes. Not checked against any exchange.
+        accountId:
+          type: string
+          description: The account the asset is kept at, for grouping only.
+    InvestmentPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: [string, "null"]
+        type:
+          oneOf:
+            - $ref: "#/components/schemas/InvestmentType"
+            - type: "null"
+        ticker:
+          type: [string, "null"]
+          description: '`""` clears it.'
+        accountId:
+          type: [string, "null"]
+          description: '`""` unlinks the account.'
+    Returns:
+      type: object
+      required: [value, invested, contributed, unrealizedGain, realizedGain, income, fees, totalReturn, returnBps]
+      properties:
+        value:
+          type: integer
+          format: int64
+          description: What it is worth now.
+        invested:
+          type: integer
+          format: int64
+          description: The cost of what is still held.
+        contributed:
+          type: integer
+          format: int64
+          description: Every buy, fees included.
+        unrealizedGain:
+          type: integer
+          format: int64
+          description: "`value` less `invested`."
+        realizedGain:
+          type: integer
+          format: int64
+          description: What the sales got back, less their fees, above the cost of what they sold.
+        income:
+          type: integer
+          format: int64
+        fees:
+          type: integer
+          format: int64
+          description: The fees charged apart from the trades.
+        totalReturn:
+          type: integer
+          format: int64
+          description: "`unrealizedGain` + `realizedGain` + `income` - `fees`."
+        returnBps:
+          type: [integer, "null"]
+          format: int64
+          description: "`totalReturn / contributed` in basis points (1234 is 12.34%); null with nothing contributed."
+    Position:
+      allOf:
+        - $ref: "#/components/schemas/Returns"
+        - type: object
+          required: [quantity, averagePrice, price, valuedOn]
+          properties:
+            quantity:
+              description: The units held; null by value.
+              oneOf:
+                - $ref: "#/components/schemas/Decimal"
+                - type: "null"
+            averagePrice:
+              description: The average cost of a unit held; null with none.
+              oneOf:
+                - $ref: "#/components/schemas/Decimal"
+                - type: "null"
+            price:
+              description: The last price of a unit (a valuation's or a trade's); null by value.
+              oneOf:
+                - $ref: "#/components/schemas/Decimal"
+                - type: "null"
+            valuedOn:
+              description: The day of the last quote; null before any.
+              oneOf:
+                - $ref: "#/components/schemas/Date"
+                - type: "null"
+    Investment:
+      type: object
+      required: [id, name, type, mode, currency, ticker, accountId, source, position, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/InvestmentType"
+        mode:
+          type: string
+          enum: [units, value]
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        ticker:
+          type: [string, "null"]
+        accountId:
+          type: [string, "null"]
+        source:
+          type: string
+          enum: [manual, open_finance]
+        position:
+          $ref: "#/components/schemas/Position"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    InvestmentTotal:
+      allOf:
+        - $ref: "#/components/schemas/Returns"
+        - type: object
+          required: [currency, byType]
+          properties:
+            currency:
+              type: string
+              enum: [BRL, USD, EUR]
+            byType:
+              type: array
+              description: The value by type, the largest first.
+              items:
+                type: object
+                required: [type, value]
+                properties:
+                  type:
+                    $ref: "#/components/schemas/InvestmentType"
+                  value:
+                    type: integer
+                    format: int64
+    Portfolio:
+      type: object
+      required: [investments, totals]
+      properties:
+        investments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Investment"
+        totals:
+          type: array
+          description: By currency, in alphabetical order.
+          items:
+            $ref: "#/components/schemas/InvestmentTotal"
+    MovementType:
+      type: string
+      enum: [buy, sell, income, fee, valuation]
+    MovementCreate:
+      type: object
+      additionalProperties: false
+      required: [type, date]
+      properties:
+        type:
+          $ref: "#/components/schemas/MovementType"
+        date:
+          $ref: "#/components/schemas/Date"
+        quantity:
+          $ref: "#/components/schemas/Decimal"
+        price:
+          $ref: "#/components/schemas/Decimal"
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 10000000000000
+          description: In minor units; above zero but on a valuation.
+        fees:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 10000000000000
+        categoryId:
+          type: string
+          description: An income category of the caller (income only).
+    MovementPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        date:
+          oneOf:
+            - $ref: "#/components/schemas/Date"
+            - type: "null"
+        quantity:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        price:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        amount:
+          type: [integer, "null"]
+          format: int64
+        fees:
+          type: [integer, "null"]
+          format: int64
+        categoryId:
+          type: [string, "null"]
+    Movement:
+      type: object
+      required: [id, investmentId, type, date, quantity, price, amount, fees, categoryId, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        investmentId:
+          type: string
+        type:
+          $ref: "#/components/schemas/MovementType"
+        date:
+          $ref: "#/components/schemas/Date"
+        quantity:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        price:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        amount:
+          type: [integer, "null"]
+          format: int64
+        fees:
+          type: [integer, "null"]
+          format: int64
+        categoryId:
+          type: [string, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    MovementPage:
+      type: object
+      required: [movements, nextCursor]
+      properties:
+        movements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Movement"
+        nextCursor:
+          type: [string, "null"]
+          description: Pass it as `cursor` for the next page; null on the last one.
     CsrfToken:
       type: object
       required: [csrfToken]
@@ -3532,6 +4211,11 @@ components:
             - mfa_not_enabled
             - mfa_setup_required
             - limit_reached
+            - account_in_use
+            - category_in_use
+            - used_by_recurrence
+            - budget_exists
+            - exceeds_position
         requestId:
           type: string
         errors:
