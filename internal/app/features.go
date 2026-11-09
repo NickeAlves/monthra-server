@@ -24,6 +24,17 @@ import (
 type features struct {
 	routes  []handler.Routes
 	erasers []authuc.UserDataEraser
+	// services write the demo data of make seed through the same rules as
+	// the API.
+	services featureServices
+}
+
+// featureServices are the use cases of the features that store data.
+type featureServices struct {
+	accounts     *accounts.Service
+	categories   *categories.Service
+	transactions *transactions.Service
+	recurrences  *recurrences.Service
 }
 
 // newFeatures wires every domain feature on db, the dashboard summaries
@@ -73,6 +84,10 @@ func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger 
 			// The summaries cached under the dropped version are never read
 			// again and expire within cache.DefaultSummaryTTL.
 			summaries,
+		},
+		services: featureServices{
+			accounts: accountsService, categories: categoriesService,
+			transactions: transactionsService, recurrences: recurrencesService,
 		},
 	}
 }

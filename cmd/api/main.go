@@ -2,10 +2,12 @@
 //
 //	api              run the service
 //	api healthcheck  probe the local /healthz (used by the distroless image's HEALTHCHECK)
+//	api seed         replace the local demo user and its fake data (make seed; APP_ENV=local only)
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,10 +28,42 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			os.Exit(healthcheck())
+		case "seed":
+			os.Exit(seed())
+		}
 	}
 	os.Exit(run())
+}
+
+// seed runs app.Seed and prints how to sign in as the demo user. The
+// password comes from SEED_PASSWORD, or is made up and printed.
+func seed() int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "invalid configuration:", err)
+		return 2
+	}
+	logger := observability.NewLogger(os.Stderr, observability.LoggerOptions{
+		Level: cfg.LogLevel, Service: cfg.ServiceName, Version: version, Env: string(cfg.AppEnv),
+	})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	res, err := app.Seed(ctx, cfg, logger, os.Getenv("SEED_PASSWORD"))
+	if errors.Is(err, app.ErrSeedNotLocal) {
+		fmt.Fprintln(os.Stderr, "seed:", err)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "seed failed:", err)
+		return 1
+	}
+	fmt.Printf("demo user ready: %d accounts, %d recurrences, %d transactions\n", res.Accounts, res.Recurrences, res.Transactions)
+	fmt.Printf("  email:    %s\n  password: %s\n", res.Email, res.Password)
+	return 0
 }
 
 func run() int {
