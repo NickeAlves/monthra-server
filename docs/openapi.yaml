@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.11.0
+  version: 0.12.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -262,6 +262,27 @@ info:
     - Summaries are cached for 5 minutes and every write to the caller's data drops them, so
       a change shows on the next read.
 
+    ## Budgets (`/api/v1/budgets`)
+
+    - A budget is the most the caller means to spend on one expense category in one month,
+      in one currency: only the expenses in that currency count, with no conversion. One per
+      category and month (`409 budget_exists`); the category, month and currency never change.
+    - `spent` adds up the category's expenses over the whole month, the days still to come
+      included (an installment later in the month), as the dashboard counts them.
+      `scheduled` is what the recurrences are still to create in the month; it never counts
+      toward `status`: `ok`, `warning` (from `warnAt` percent of `limit`, 80 by default, the
+      limit itself included) or `exceeded` (past `limit`).
+    - The budgets of a month carry on to the next one when it starts, so a change or a
+      deletion applies from its month on and the months gone by keep theirs. Budgets are
+      created for the reader's month (`asOf`) or one gone by; a later month is a projection
+      of the reader's (`projected: true`, no ids) until it starts.
+    - Alerts: when spending crosses a budget's warning share or its limit, the caller gets
+      one email, once per budget and month for each, unless `budgetAlerts` is off in
+      `PATCH /api/v1/me/preferences`. Only spending in the current month alerts; creating a
+      budget or changing its limit is silent, and raising the limit rearms the alerts. The
+      email names no category and links to `/budgets?month=YYYY-MM` on the web app.
+    - Deleting a category deletes its budgets in every month.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
@@ -293,6 +314,8 @@ tags:
     description: The caller's recurring transactions and their occurrences
   - name: dashboard
     description: The caller's monthly summary
+  - name: budgets
+    description: The caller's monthly budgets by expense category, and their alerts
 paths:
   /healthz:
     get:
@@ -1329,7 +1352,8 @@ paths:
         caller's categories of the same kind: its transactions move there first
         (`reassignTo: invalid` for an unknown or the same category, `kind_mismatch` for the
         other kind), and the recurrences naming it too. Without `reassignTo`, a category a
-        recurrence names answers `409 used_by_recurrence`.
+        recurrence names answers `409 used_by_recurrence`. Its budgets are deleted with it, in
+        every month.
       operationId: deleteCategory
       security:
         - bearerAuth: []
@@ -1856,6 +1880,184 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/budgets:
+    get:
+      tags: [budgets]
+      summary: List the budgets of a month
+      description: |
+        The whole list (one per expense category at most) with what each spent and has
+        scheduled, and the totals by currency, after the occurrences of the recurrences due up
+        to the reader's today are created and the budgets carried over to the reader's month.
+        A month after the reader's is a projection of the reader's month: no ids, what is
+        already spent in it.
+      operationId: listBudgets
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: The month; the month of the reader's today by default.
+          schema:
+            $ref: "#/components/schemas/Month"
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: "The budgets (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetMonth"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [budgets]
+      summary: Create a budget
+      description: |
+        For an expense category of the caller (`categoryId: invalid` otherwise,
+        `kind_mismatch` for an income category), in the reader's month or one gone by
+        (`month: out_of_range` for a later one). A budget created already past its warning
+        share or its limit sends no alert for what it is already past.
+      operationId: createBudget
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The path of the new budget.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Budget"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/BudgetExists"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/budgets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [budgets]
+      summary: Read a budget
+      operationId: getBudget
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: "The budget with its usage (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Budget"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags: [budgets]
+      summary: Change a budget
+      description: |
+        Changes the limit or the warning share. `categoryId`, `month` and `currency` are not
+        fields: sending them answers `400`. The alerts follow silently: those now crossed send
+        nothing, those no longer crossed (a limit raised) alert again when spending crosses
+        them. A budget of the reader's month carries the change on to the next months.
+      operationId: updateBudget
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetPatch"
+      responses:
+        "200":
+          description: The budget after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Budget"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [budgets]
+      summary: Delete a budget
+      description: |
+        Deletes the budget of its month; a budget of the reader's month is not carried over
+        to the next months either.
+      operationId: deleteBudget
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     AsOf:
@@ -2019,6 +2221,12 @@ components:
       description: |
         An active recurrence names the account (`used_by_recurrence`): end the recurrence or
         move it to another account before archiving this one.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BudgetExists:
+      description: The category already has a budget in the month (`budget_exists`); change its limit instead.
       content:
         application/problem+json:
           schema:
@@ -2264,7 +2472,7 @@ components:
           maxLength: 100
     Preferences:
       type: object
-      required: [locale, theme, currency]
+      required: [locale, theme, currency, budgetAlerts]
       properties:
         locale:
           type: string
@@ -2275,6 +2483,9 @@ components:
         currency:
           type: string
           enum: [BRL, USD, EUR]
+        budgetAlerts:
+          type: boolean
+          description: Sends the budget alert emails (on by default); budget statuses show either way.
     PreferencesPatch:
       type: object
       additionalProperties: false
@@ -2288,6 +2499,8 @@ components:
         currency:
           type: [string, "null"]
           enum: [BRL, USD, EUR, null]
+        budgetAlerts:
+          type: [boolean, "null"]
     ChangePasswordRequest:
       type: object
       additionalProperties: false
@@ -3144,6 +3357,119 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Invoice"
+    BudgetCreate:
+      type: object
+      additionalProperties: false
+      required: [categoryId, currency, limit]
+      properties:
+        categoryId:
+          type: string
+          description: An expense category of the caller.
+        month:
+          allOf:
+            - $ref: "#/components/schemas/Month"
+          description: The reader's month by default; never a later one.
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+          description: Only the expenses in this currency count.
+        limit:
+          $ref: "#/components/schemas/Amount"
+        warnAt:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 100
+          description: The share of the limit, in percent, from which the budget warns; 80 by default.
+    BudgetPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        limit:
+          oneOf:
+            - $ref: "#/components/schemas/Amount"
+            - type: "null"
+        warnAt:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 100
+    Budget:
+      type: object
+      required: [id, categoryId, month, currency, limit, warnAt, spent, scheduled, remaining, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: [string, "null"]
+          description: Null on a projected budget (a month still to start).
+        categoryId:
+          type: string
+        month:
+          $ref: "#/components/schemas/Month"
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        limit:
+          $ref: "#/components/schemas/Amount"
+        warnAt:
+          type: integer
+          minimum: 1
+          maximum: 100
+        spent:
+          type: integer
+          format: int64
+          description: The category's expenses in `currency` over the whole month.
+        scheduled:
+          type: integer
+          format: int64
+          description: What the recurrences are still to create in the month; not in `status`.
+        remaining:
+          type: integer
+          format: int64
+          description: "`limit` less `spent`; negative past the limit."
+        status:
+          type: string
+          enum: [ok, warning, exceeded]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BudgetTotal:
+      type: object
+      required: [currency, limit, spent, scheduled, remaining]
+      properties:
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+        limit:
+          type: integer
+          format: int64
+        spent:
+          type: integer
+          format: int64
+        scheduled:
+          type: integer
+          format: int64
+        remaining:
+          type: integer
+          format: int64
+    BudgetMonth:
+      type: object
+      required: [month, projected, budgets, totals]
+      properties:
+        month:
+          $ref: "#/components/schemas/Month"
+        projected:
+          type: boolean
+          description: A month still to start; its budgets are the reader's month's, with no ids.
+        budgets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Budget"
+        totals:
+          type: array
+          description: By currency, in alphabetical order.
+          items:
+            $ref: "#/components/schemas/BudgetTotal"
     CsrfToken:
       type: object
       required: [csrfToken]
