@@ -61,7 +61,7 @@ func seed() int {
 		fmt.Fprintln(os.Stderr, "seed failed:", err)
 		return 1
 	}
-	fmt.Printf("demo user ready: %d accounts, %d recurrences, %d transactions\n", res.Accounts, res.Recurrences, res.Transactions)
+	fmt.Printf("demo user ready: %d accounts, %d recurrences, %d transactions, %d budgets\n", res.Accounts, res.Recurrences, res.Transactions, res.Budgets)
 	fmt.Printf("  email:    %s\n  password: %s\n", res.Email, res.Password)
 	return 0
 }
