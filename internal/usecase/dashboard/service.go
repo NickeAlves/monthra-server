@@ -26,6 +26,7 @@ type Service struct {
 	accounts    Accounts
 	ledger      Ledger
 	recurrences Recurrences
+	investments Investments
 	cache       Cache
 	metrics     Metrics
 	logger      *slog.Logger
@@ -40,12 +41,21 @@ type Options struct {
 	Logger *slog.Logger
 	// Metrics defaults to counting nothing.
 	Metrics Metrics
+	// Investments adds the income of the investments to the flows; it
+	// defaults to none.
+	Investments Investments
 }
 
 type noMetrics struct{}
 
 func (noMetrics) CacheRequest(string, string) {}
 func (noMetrics) CacheError(string, string)   {}
+
+type noInvestments struct{}
+
+func (noInvestments) IncomeFlows(context.Context, string, domain.Date, domain.Date) ([]domain.FlowSum, error) {
+	return nil, nil
+}
 
 func (o Options) withDefaults() Options {
 	if o.Now == nil {
@@ -57,6 +67,9 @@ func (o Options) withDefaults() Options {
 	if o.Metrics == nil {
 		o.Metrics = noMetrics{}
 	}
+	if o.Investments == nil {
+		o.Investments = noInvestments{}
+	}
 	return o
 }
 
@@ -64,7 +77,7 @@ func (o Options) withDefaults() Options {
 func NewService(accounts Accounts, ledger Ledger, recurrences Recurrences, cache Cache, o Options) *Service {
 	o = o.withDefaults()
 	return &Service{
-		accounts: accounts, ledger: ledger, recurrences: recurrences, cache: cache,
+		accounts: accounts, ledger: ledger, recurrences: recurrences, investments: o.Investments, cache: cache,
 		metrics: o.Metrics, logger: o.Logger, now: o.Now,
 	}
 }
@@ -104,8 +117,9 @@ func (s *Service) Summary(ctx context.Context, userID string, month domain.Month
 	return sum, nil
 }
 
-// build computes the summary from the accounts, the transactions and the
-// recurrences.
+// build computes the summary from the accounts, the transactions, the
+// recurrences and the income of the investments, which counts as income of
+// its month but in no balance (the portfolio stands apart).
 func (s *Service) build(ctx context.Context, userID string, month domain.Month, today, cut domain.Date) (domain.Summary, error) {
 	first := month.AddMonths(1 - domain.SummaryHistoryMonths)
 	accounts, err := s.accounts.List(ctx, userID, true)
@@ -116,6 +130,11 @@ func (s *Service) build(ctx context.Context, userID string, month domain.Month, 
 	if err != nil {
 		return domain.Summary{}, fmt.Errorf("sum flows: %w", err)
 	}
+	income, err := s.investments.IncomeFlows(ctx, userID, first.Day(1), month.LastDay())
+	if err != nil {
+		return domain.Summary{}, fmt.Errorf("sum investment income: %w", err)
+	}
+	flows = append(flows, income...)
 	legs, err := s.ledger.LegSums(ctx, userID, first, cut)
 	if err != nil {
 		return domain.Summary{}, fmt.Errorf("sum balances: %w", err)

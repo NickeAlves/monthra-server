@@ -88,14 +88,14 @@ func newFeatures(d featureDeps) features {
 		categories.Options{Recurrences: recurrencesStore, Budgets: budgetsStore, AfterWrite: hooks})
 	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore,
 		transactions.Options{Metrics: metrics, Series: recurrencesService, AfterWrite: hooks})
-	dashboardService := dashboard.NewService(accountsStore, ledger, recurrencesService, summaries,
-		dashboard.Options{Logger: logger, Metrics: metrics})
-	// The budgets read what was spent after the recurrences create their
-	// occurrences, so they come after them (the alerts came before).
-	budgetsService := budgets.NewService(budgetsStore, users, categoriesStore, ledger, recurrencesService, budgets.Options{})
 	// The portfolio stands apart from the accounts; only its income counts
 	// on the dashboard.
 	investmentsStore, movementsStore := repomongo.NewInvestments(db), repomongo.NewInvestmentMovements(db)
+	dashboardService := dashboard.NewService(accountsStore, ledger, recurrencesService, summaries,
+		dashboard.Options{Logger: logger, Metrics: metrics, Investments: movementsStore})
+	// The budgets read what was spent after the recurrences create their
+	// occurrences, so they come after them (the alerts came before).
+	budgetsService := budgets.NewService(budgetsStore, users, categoriesStore, ledger, recurrencesService, budgets.Options{})
 	investmentsService := investments.NewService(investmentsStore, movementsStore, accountsStore, categoriesStore,
 		investments.Options{AfterWrite: hooks, Metrics: metrics})
 	return features{

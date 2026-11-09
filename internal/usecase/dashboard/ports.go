@@ -1,7 +1,7 @@
 // Package dashboard implements the monthly dashboard of a user (§1 item 2):
-// income and expenses of a month, by category and by currency, what the
-// recurrences are still to create in it, the balances and a 12-month
-// history of the net worth. Summaries are cached (cache-aside, §5.4) under
+// income and expenses of a month, by category and by currency (the income
+// of the investments included), what the recurrences are still to create in
+// it, the balances and a 12-month history of the net worth. Summaries are cached (cache-aside, §5.4) under
 // a version of the user's data, which every write bumps (Invalidator).
 // Every method takes the caller's user id from the access token, never
 // from the body.
@@ -36,6 +36,15 @@ type Recurrences interface {
 	// Scheduled returns what userID's recurrences are still to create from
 	// day from through day to.
 	Scheduled(ctx context.Context, userID string, from, to domain.Date) ([]domain.Transaction, error)
+}
+
+// Investments sums what the caller's investments paid: their income counts
+// as income of its month (user decision of 2026-11-09), while the portfolio
+// stays out of the balances and the net worth.
+type Investments interface {
+	// IncomeFlows sums the income of the investments from day from to day
+	// to by month, currency and category, as FlowSums of kind income.
+	IncomeFlows(ctx context.Context, userID string, from, to domain.Date) ([]domain.FlowSum, error)
 }
 
 // Cache keeps the summaries of each user under a version of their data.

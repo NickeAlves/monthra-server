@@ -356,3 +356,47 @@ func TestCodec(t *testing.T) {
 		assert.Error(t, err, name)
 	}
 }
+
+type fakeInvestments struct {
+	log    *calls
+	income []domain.FlowSum
+	err    error
+}
+
+func (f *fakeInvestments) IncomeFlows(_ context.Context, userID string, from, to domain.Date) ([]domain.FlowSum, error) {
+	f.log.add("income %s %s %s", userID, from, to)
+	return f.income, f.err
+}
+
+func TestSummaryCountsInvestmentIncome(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture()
+	november := domain.NewMonth(2026, time.November)
+	f.ledger.flows = append(f.ledger.flows,
+		domain.FlowSum{Month: november, Currency: "BRL", Kind: domain.TransactionIncome, CategoryID: "dividends", Amount: 1000, Count: 1})
+	inv := &fakeInvestments{log: f.log, income: []domain.FlowSum{
+		{Month: november, Currency: "BRL", Kind: domain.TransactionIncome, CategoryID: "dividends", Amount: 250, Count: 2},
+		{Month: domain.NewMonth(2026, time.October), Currency: "BRL", Kind: domain.TransactionIncome, CategoryID: "dividends", Amount: 90, Count: 1},
+		{Month: november, Currency: "USD", Kind: domain.TransactionIncome, CategoryID: "dividends", Amount: 40, Count: 1},
+	}}
+	svc := NewService(f.accounts, f.ledger, f.recurrences, f.cache, Options{Now: func() time.Time { return t0 }, Investments: inv})
+
+	sum, err := svc.Summary(ctx, "u1", domain.Month{}, domain.Date{})
+	require.NoError(t, err)
+	assert.Contains(t, *f.log, "income u1 2025-12-01 2026-11-30", "the history's months")
+	require.Len(t, sum.Currencies, 2)
+	brl := sum.Currencies[0]
+	assert.Equal(t, int64(1250), brl.Income, "the income of the month, investments included")
+	assert.Equal(t, int64(1250-3000), brl.Net)
+	assert.Equal(t, []domain.CategoryTotal{{CategoryID: "dividends", Amount: 1250, Count: 3}}, brl.IncomeByCategory, "merged by category")
+	assert.Equal(t, int64(90), brl.History[10].Income, "October")
+	assert.Equal(t, int64(97000), brl.Balance, "no account balance moves")
+	usd := sum.Currencies[1]
+	assert.Equal(t, "USD", usd.Currency, "a currency with income only")
+	assert.Equal(t, int64(40), usd.Income)
+	assert.Zero(t, usd.Balance)
+
+	inv.err = errors.New("mongo down")
+	_, err = svc.Summary(ctx, "u1", domain.NewMonth(2026, time.March), domain.Date{})
+	assert.ErrorContains(t, err, "sum investment income")
+}

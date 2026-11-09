@@ -188,12 +188,35 @@ func TestInvestmentsEndToEnd(t *testing.T) {
 	r = call(t, native, http.MethodPost, investments, map[string]any{"name": "X", "type": "stock", "currency": "BRL", "accountId": broker}, asBob)
 	assert.Equal(t, http.StatusUnprocessableEntity, r.status, "another user's account")
 
+	// An income counts as income of its month on the dashboard, under its
+	// category; no account balance moves.
+	categories := byKey(mustList(t, native, api+"/api/v1/categories", asAna))
+	dividends, groceries := categories["investment_income"].ID, categories["groceries"].ID
+	summary := api + "/api/v1/dashboard/summary?asOf=" + today.String()
+	before := currencyOf(t, call(t, native, http.MethodGet, summary, nil, asAna), "BRL")
+	r = call(t, native, http.MethodPost, movements, map[string]any{"type": "income", "date": today.String(), "amount": 1234, "categoryId": groceries}, asAna)
+	require.Equal(t, http.StatusUnprocessableEntity, r.status, r.body)
+	assert.Equal(t, "kind_mismatch", fieldCode(t, r), "an expense category")
+	income := create(movements, map[string]any{"type": "income", "date": today.String(), "amount": 1234, "categoryId": dividends})
+	assert.Equal(t, dividends, income.str("categoryId"))
+	after := currencyOf(t, call(t, native, http.MethodGet, summary, nil, asAna), "BRL")
+	assert.Equal(t, before["income"].(float64)+1234, after["income"], "the cached summary was dropped")
+	assert.Equal(t, before["balance"], after["balance"], "the portfolio stands apart")
+	assert.Equal(t, []any{map[string]any{"categoryId": dividends, "amount": float64(1234), "count": float64(1)}}, after["incomeByCategory"])
+	p = positionOf(t, call(t, native, http.MethodGet, investments+"/"+stock, nil, asAna))
+	assert.Equal(t, float64(1234), p["income"])
+
 	_, metrics := get(t, metricsURL)
 	assert.Contains(t, metrics, `monthra_investment_movements_created_total{type="buy"} 3`)
 
 	// Deleting an investment deletes its movements.
 	require.Equal(t, http.StatusNoContent, call(t, native, http.MethodDelete, investments+"/"+cdb, nil, asAna).status)
 	assert.Equal(t, http.StatusNotFound, call(t, native, http.MethodGet, investments+"/"+cdb+"/movements", nil, asAna).status)
+
+	// Deleting the stock takes its income off the dashboard.
+	require.Equal(t, http.StatusNoContent, call(t, native, http.MethodDelete, investments+"/"+stock, nil, asAna).status)
+	after = currencyOf(t, call(t, native, http.MethodGet, summary, nil, asAna), "BRL")
+	assert.Equal(t, before["income"], after["income"])
 
 	// DELETE /me leaves no investment and no movement behind.
 	r = call(t, native, http.MethodGet, api+"/api/v1/me", nil, asAna)
