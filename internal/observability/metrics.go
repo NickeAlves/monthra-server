@@ -33,6 +33,7 @@ type Metrics struct {
 	emailDropped   *prometheus.CounterVec
 
 	transactionsCreated *prometheus.CounterVec
+	movementsCreated    *prometheus.CounterVec
 
 	cacheRequests *prometheus.CounterVec
 	cacheErrors   *prometheus.CounterVec
@@ -112,6 +113,11 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "transactions_created_total",
 			Help:      "Transactions created, by kind (expense, income, transfer).",
 		}, []string{"kind"}),
+		movementsCreated: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "investment_movements_created_total",
+			Help:      "Investment movements created, by type (buy, sell, income, fee, valuation).",
+		}, []string{"type"}),
 		cacheRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "monthra",
 			Name:      "cache_requests_total",
@@ -147,7 +153,7 @@ func NewMetrics(version, env string) *Metrics {
 		m.requests, m.duration, m.inFlight, buildInfo,
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
 		m.authLogins, m.refreshReuse, m.passwordResets, m.mfaEvents, m.emailSent, m.emailDropped,
-		m.transactionsCreated, m.cacheRequests, m.cacheErrors, m.budgetAlerts, m.budgetAlertErrors,
+		m.transactionsCreated, m.movementsCreated, m.cacheRequests, m.cacheErrors, m.budgetAlerts, m.budgetAlertErrors,
 	)
 	return m
 }
@@ -201,6 +207,11 @@ func (m *Metrics) EmailDropped(template string) { m.emailDropped.WithLabelValues
 
 // TransactionCreated counts one transaction created, by kind.
 func (m *Metrics) TransactionCreated(kind string) { m.transactionsCreated.WithLabelValues(kind).Inc() }
+
+// MovementCreated counts one investment movement created, by type.
+func (m *Metrics) MovementCreated(movementType string) {
+	m.movementsCreated.WithLabelValues(movementType).Inc()
+}
 
 // CacheRequest counts one cache lookup, by result (hit, miss).
 func (m *Metrics) CacheRequest(cache, result string) {
