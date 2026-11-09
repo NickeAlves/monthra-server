@@ -20,7 +20,7 @@ type Service struct {
 	marker      SeedMarker
 	usage       Usage
 	recurrences Usage
-	invalidate  Invalidator
+	afterWrite  WriteHook
 	now         func() time.Time
 	max         int
 }
@@ -34,14 +34,14 @@ type Options struct {
 	// Recurrences are the other records that name categories; nil names
 	// none.
 	Recurrences Usage
-	// Invalidator is told when a deletion moves transactions to another
+	// AfterWrite is told when a deletion moves transactions to another
 	// category; it defaults to none.
-	Invalidator Invalidator
+	AfterWrite WriteHook
 }
 
-type noInvalidator struct{}
+type noHook struct{}
 
-func (noInvalidator) Invalidate(context.Context, string) {}
+func (noHook) AfterWrite(context.Context, string) {}
 
 type noUsage struct{}
 
@@ -61,11 +61,11 @@ func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service
 	if o.Recurrences == nil {
 		o.Recurrences = noUsage{}
 	}
-	if o.Invalidator == nil {
-		o.Invalidator = noInvalidator{}
+	if o.AfterWrite == nil {
+		o.AfterWrite = noHook{}
 	}
 	return &Service{
-		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, invalidate: o.Invalidator,
+		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, afterWrite: o.AfterWrite,
 		now: o.Now, max: o.MaxCategories,
 	}
 }
@@ -201,7 +201,7 @@ func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) err
 	}
 	// Moving transactions changes the dashboard's categories; a category
 	// deleted unused, or created or renamed, changes no number there.
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	now := s.clock()
 	if err := s.reassign(ctx, userID, id, reassignTo, now); err != nil {
 		return err

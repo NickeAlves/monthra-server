@@ -491,16 +491,16 @@ func TestAccountsOfRecurrences(t *testing.T) {
 	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a1"), recurrences.err)
 }
 
-// countingInvalidator counts the invalidations of each user.
-type countingInvalidator map[string]int
+// countingHook counts the hook calls of each user.
+type countingHook map[string]int
 
-func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+func (c countingHook) AfterWrite(_ context.Context, userID string) { c[userID]++ }
 
-func TestWritesInvalidate(t *testing.T) {
+func TestWritesRunTheHook(t *testing.T) {
 	ctx := context.Background()
-	invalid := countingInvalidator{}
+	invalid := countingHook{}
 	store := newMemStore()
-	svc := NewService(store, &fakeLedger{}, Options{Now: func() time.Time { return t0 }, Invalidator: invalid})
+	svc := NewService(store, &fakeLedger{}, Options{Now: func() time.Time { return t0 }, AfterWrite: invalid})
 
 	a, err := svc.Create(ctx, "u1", checking("Bank"))
 	require.NoError(t, err)

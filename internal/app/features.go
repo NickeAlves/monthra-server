@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/redis/go-redis/v9"
@@ -42,9 +43,10 @@ type featureServices struct {
 // (the UserDataEraser contract of CLAUDE.md).
 func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger *slog.Logger, metrics *observability.Metrics) features {
 	// Every write to a user's finance data drops their cached summaries, so
-	// the invalidator comes before the use cases that write.
+	// the hooks come before the use cases that write.
 	summaries := cache.NewSummaries(rdb, keys, 0)
 	invalidator := dashboard.NewInvalidator(summaries, dashboard.Options{Logger: logger, Metrics: metrics})
+	hooks := writeHooks{invalidator.Invalidate}
 	accountsStore, categoriesStore := repomongo.NewAccounts(db), repomongo.NewCategories(db)
 	// The transactions hold the balances of the accounts and tell whether
 	// an account or a category is still in use.
@@ -54,14 +56,14 @@ func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger 
 	// categories too.
 	recurrencesStore := repomongo.NewRecurrences(db)
 	recurrencesService := recurrences.NewService(recurrencesStore, ledger, accountsStore, categoriesStore,
-		recurrences.Options{Logger: logger, Metrics: metrics, Invalidator: invalidator})
+		recurrences.Options{Logger: logger, Metrics: metrics, AfterWrite: hooks})
 	accountsService := accounts.NewService(accountsStore, ledger,
-		accounts.Options{Recurrences: recurrencesService, Invalidator: invalidator})
+		accounts.Options{Recurrences: recurrencesService, AfterWrite: hooks})
 	// users.categories_seeded_at marks who already got the default set.
 	categoriesService := categories.NewService(categoriesStore, repomongo.NewUsers(db), ledger,
-		categories.Options{Recurrences: recurrencesStore, Invalidator: invalidator})
+		categories.Options{Recurrences: recurrencesStore, AfterWrite: hooks})
 	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore,
-		transactions.Options{Metrics: metrics, Series: recurrencesService, Invalidator: invalidator})
+		transactions.Options{Metrics: metrics, Series: recurrencesService, AfterWrite: hooks})
 	dashboardService := dashboard.NewService(accountsStore, ledger, recurrencesService, summaries,
 		dashboard.Options{Logger: logger, Metrics: metrics})
 	return features{
@@ -89,5 +91,16 @@ func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger 
 			accounts: accountsService, categories: categoriesService,
 			transactions: transactionsService, recurrences: recurrencesService,
 		},
+	}
+}
+
+// writeHooks run, in order, after every write attempt to a user's finance
+// data (the use cases' WriteHook). Each one never fails.
+type writeHooks []func(ctx context.Context, userID string)
+
+// AfterWrite runs every hook for userID.
+func (h writeHooks) AfterWrite(ctx context.Context, userID string) {
+	for _, run := range h {
+		run(ctx, userID)
 	}
 }

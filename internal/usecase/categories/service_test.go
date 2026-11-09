@@ -495,15 +495,15 @@ func TestDeleteCategoryOfARecurrence(t *testing.T) {
 	assert.ErrorContains(t, svc.Delete(ctx, "u1", spare.ID, ""), "check category use: mongo down")
 }
 
-// countingInvalidator counts the invalidations of each user.
-type countingInvalidator map[string]int
+// countingHook counts the hook calls of each user.
+type countingHook map[string]int
 
-func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+func (c countingHook) AfterWrite(_ context.Context, userID string) { c[userID]++ }
 
-func TestDeleteInvalidatesWhenItMovesTransactions(t *testing.T) {
+func TestDeleteRunsTheHookWhenItMovesTransactions(t *testing.T) {
 	ctx := context.Background()
-	store, usage, invalid := newMemStore(), newMemUsage(), countingInvalidator{}
-	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }, Invalidator: invalid})
+	store, usage, invalid := newMemStore(), newMemUsage(), countingHook{}
+	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }, AfterWrite: invalid})
 	food, err := svc.Create(ctx, "u1", food())
 	require.NoError(t, err)
 	fun, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Fun", Kind: "expense", Icon: "party-popper", Color: "#00AA00"})
