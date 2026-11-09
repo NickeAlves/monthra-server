@@ -86,7 +86,7 @@ func newFeatures(d featureDeps) features {
 	recurrencesService := recurrences.NewService(recurrencesStore, ledger, accountsStore, categoriesStore,
 		recurrences.Options{Logger: logger, Metrics: metrics, AfterWrite: hooks})
 	accountsService := accounts.NewService(accountsStore, ledger,
-		accounts.Options{Recurrences: recurrencesService, AfterWrite: hooks})
+		accounts.Options{Recurrences: recurrencesService, Investments: investmentsStore, AfterWrite: hooks})
 	// users.categories_seeded_at marks who already got the default set.
 	categoriesService := categories.NewService(categoriesStore, users, ledger,
 		categories.Options{Recurrences: recurrencesStore, Investments: movementsStore, Budgets: budgetsStore, AfterWrite: hooks})

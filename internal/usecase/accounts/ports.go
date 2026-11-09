@@ -5,6 +5,7 @@ package accounts
 
 import (
 	"context"
+	"time"
 
 	"github.com/NickeAlves/monthra-server/internal/domain"
 )
@@ -47,6 +48,14 @@ type Recurrences interface {
 	// AccountUsage reports whether a recurrence of userID names account id,
 	// and whether one of those is still active.
 	AccountUsage(ctx context.Context, userID, id string) (used, active bool, err error)
+}
+
+// Investments is what the accounts need from the portfolio: an investment
+// may name the account it is kept at, for grouping only.
+type Investments interface {
+	// UnlinkAccount removes account accountID of userID from the
+	// investments kept at it, at at.
+	UnlinkAccount(ctx context.Context, userID, accountID string, at time.Time) error
 }
 
 // WriteHook runs after every write attempt to a user's finance data (it

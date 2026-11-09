@@ -50,6 +50,8 @@ func TestInvestmentsEndToEnd(t *testing.T) {
 		return r
 	}
 	broker := create(api+"/api/v1/accounts", map[string]any{"name": "Broker", "type": "brokerage", "currency": "BRL"}).str("id")
+	// A bank keeps BRL on the dashboard after the broker goes.
+	create(api+"/api/v1/accounts", map[string]any{"name": "Bank", "type": "checking", "currency": "BRL", "initialBalance": 5000})
 
 	r := create(investments, map[string]any{"name": "Monthra SA", "type": "stock", "currency": "BRL", "ticker": "mnth3", "accountId": broker})
 	stock := r.str("id")
@@ -221,6 +223,15 @@ func TestInvestmentsEndToEnd(t *testing.T) {
 
 	_, metrics := get(t, metricsURL)
 	assert.Contains(t, metrics, `monthra_investment_movements_created_total{type="buy"} 3`)
+
+	// Deleting the account an investment is kept at unlinks it.
+	r = call(t, native, http.MethodGet, investments+"/"+stock, nil, asAna)
+	require.Equal(t, broker, r.str("accountId"))
+	require.Equal(t, http.StatusNoContent, call(t, native, http.MethodDelete, api+"/api/v1/accounts/"+broker, nil, asAna).status)
+	r = call(t, native, http.MethodGet, investments+"/"+stock, nil, asAna)
+	require.Equal(t, http.StatusOK, r.status, r.body)
+	assert.Nil(t, r.body["accountId"])
+	assert.Equal(t, "15", positionOf(t, r)["quantity"], "its history stays")
 
 	// Deleting an investment deletes its movements.
 	require.Equal(t, http.StatusNoContent, call(t, native, http.MethodDelete, investments+"/"+cdb, nil, asAna).status)
