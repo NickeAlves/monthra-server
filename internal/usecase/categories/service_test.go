@@ -495,6 +495,27 @@ func TestDeleteCategoryOfARecurrence(t *testing.T) {
 	assert.ErrorContains(t, svc.Delete(ctx, "u1", spare.ID, ""), "check category use: mongo down")
 }
 
+func TestDeleteCategoryOfAnInvestmentIncome(t *testing.T) {
+	store, usage, investments := newMemStore(), newMemUsage(), newMemUsage()
+	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }, Investments: investments})
+	ctx := context.Background()
+	dividends, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Dividends", Kind: "income", Icon: "trending-up", Color: "#AA0000"})
+	require.NoError(t, err)
+	yield, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Yield", Kind: "income", Icon: "trending-up", Color: "#00AA00"})
+	require.NoError(t, err)
+	investments.byCategory[dividends.ID] = 2
+
+	assert.ErrorIs(t, svc.Delete(ctx, "u1", dividends.ID, ""), domain.ErrCategoryInUse, "no transactions, but an investment's income")
+	require.NoError(t, svc.Delete(ctx, "u1", dividends.ID, yield.ID))
+	assert.Equal(t, map[string]int{yield.ID: 2}, investments.byCategory, "the income moves too")
+	assert.Len(t, investments.moves, 2, "before and after the deletion")
+
+	spare, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Spare", Kind: "income", Icon: "gift", Color: "#0000AA"})
+	require.NoError(t, err)
+	investments.moveErr = errors.New("mongo down")
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", yield.ID, spare.ID), "move investment income: mongo down")
+}
+
 // countingHook counts the hook calls of each user.
 type countingHook map[string]int
 

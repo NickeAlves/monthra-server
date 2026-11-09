@@ -206,6 +206,19 @@ func TestInvestmentsEndToEnd(t *testing.T) {
 	p = positionOf(t, call(t, native, http.MethodGet, investments+"/"+stock, nil, asAna))
 	assert.Equal(t, float64(1234), p["income"])
 
+	// Its category is in use; deleting it moves the income first.
+	r = call(t, native, http.MethodDelete, api+"/api/v1/categories/"+dividends, nil, asAna)
+	require.Equal(t, http.StatusConflict, r.status, r.body)
+	assert.Equal(t, "category_in_use", r.str("code"))
+	other := categories["other_income"].ID
+	r = call(t, native, http.MethodDelete, api+"/api/v1/categories/"+dividends+"?reassignTo="+other, nil, asAna)
+	require.Equal(t, http.StatusNoContent, r.status, r.body)
+	r = call(t, native, http.MethodGet, movements+"/"+income.str("id"), nil, asAna)
+	require.Equal(t, http.StatusOK, r.status, r.body)
+	assert.Equal(t, other, r.str("categoryId"))
+	after = currencyOf(t, call(t, native, http.MethodGet, summary, nil, asAna), "BRL")
+	assert.Equal(t, []any{map[string]any{"categoryId": other, "amount": float64(1234), "count": float64(1)}}, after["incomeByCategory"])
+
 	_, metrics := get(t, metricsURL)
 	assert.Contains(t, metrics, `monthra_investment_movements_created_total{type="buy"} 3`)
 

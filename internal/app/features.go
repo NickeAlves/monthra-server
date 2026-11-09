@@ -65,6 +65,10 @@ func newFeatures(d featureDeps) features {
 	// The transactions hold the balances of the accounts and tell whether
 	// an account or a category is still in use.
 	ledger := repomongo.NewTransactions(db)
+	// The portfolio stands apart from the accounts: its investments may
+	// name an account (for grouping only), its income names categories and
+	// counts on the dashboard.
+	investmentsStore, movementsStore := repomongo.NewInvestments(db), repomongo.NewInvestmentMovements(db)
 	// Every write to a user's finance data drops their cached summaries and
 	// checks their budget alerts, so the hooks come before the use cases
 	// that write. users.budgets_rolled_through marks the months whose
@@ -85,12 +89,9 @@ func newFeatures(d featureDeps) features {
 		accounts.Options{Recurrences: recurrencesService, AfterWrite: hooks})
 	// users.categories_seeded_at marks who already got the default set.
 	categoriesService := categories.NewService(categoriesStore, users, ledger,
-		categories.Options{Recurrences: recurrencesStore, Budgets: budgetsStore, AfterWrite: hooks})
+		categories.Options{Recurrences: recurrencesStore, Investments: movementsStore, Budgets: budgetsStore, AfterWrite: hooks})
 	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore,
 		transactions.Options{Metrics: metrics, Series: recurrencesService, AfterWrite: hooks})
-	// The portfolio stands apart from the accounts; only its income counts
-	// on the dashboard.
-	investmentsStore, movementsStore := repomongo.NewInvestments(db), repomongo.NewInvestmentMovements(db)
 	dashboardService := dashboard.NewService(accountsStore, ledger, recurrencesService, summaries,
 		dashboard.Options{Logger: logger, Metrics: metrics, Investments: movementsStore})
 	// The budgets read what was spent after the recurrences create their
