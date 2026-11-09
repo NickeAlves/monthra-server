@@ -91,7 +91,20 @@ func Indexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("investments_user")},
 		},
 		repo.CollInvestmentMovements: {
-			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "investment_id", Value: 1}, {Key: "date", Value: -1}}, Options: options.Index().SetName("investment_movements_user_investment_date")},
+			// An investment's history in the listing order (newest first),
+			// and every read of its position.
+			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "investment_id", Value: 1}, {Key: "date", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("investment_movements_user_investment_date_id")},
+			// The income the dashboard adds to its months.
+			{
+				Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "date", Value: 1}},
+				Options: options.Index().SetName("investment_movements_user_income_date").
+					SetPartialFilterExpression(bson.D{{Key: "type", Value: "income"}}),
+			},
+			// Whether a category is in use, and moving its income.
+			partial(mongo.IndexModel{
+				Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "category_id", Value: 1}},
+				Options: options.Index().SetName("investment_movements_user_category"),
+			}, "category_id"),
 		},
 		repo.CollAuditLogs: {
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("audit_logs_user_created")},
@@ -123,6 +136,9 @@ var obsolete = map[string][]string{
 	repo.CollTransactions: {"transactions_user_account_date", "transactions_user_category_date"},
 	// Replaced by recurrences_user_created and recurrences_user_next.
 	repo.CollRecurrences: {"recurrences_user"},
+	// Replaced by investment_movements_user_investment_date_id, which
+	// matches the listing order.
+	repo.CollInvestmentMovements: {"investment_movements_user_investment_date"},
 }
 
 // transactionsBy is an index of the transactions of a user by the fields
