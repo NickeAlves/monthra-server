@@ -8,7 +8,7 @@ GOLANGCI_IMAGE := golangci/golangci-lint:v2.15.0@sha256:fbfcfd12a6f8d7f1b97b3362
 COMPOSE        := docker compose
 COMPOSE_STG    := docker compose -f docker-compose.yml -f docker-compose.staging.yml
 
-.PHONY: help env secrets network up down logs ps run test test-integration cover fmt lint vuln build staging-up staging-down
+.PHONY: help env secrets network up down logs ps run seed test test-integration cover fmt lint vuln build staging-up staging-down
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-17s %s\n", $$1, $$2}'
@@ -47,11 +47,18 @@ logs: ## Follow the logs of every service
 ps: ## Show service status
 	$(COMPOSE) ps
 
+# HOST_ENV loads .env for a command run on the host, which reaches Mongo,
+# Redis and Mailpit through their ports published on localhost.
+HOST_ENV = set -a && . ./.env && set +a && \
+	MONGO_URI="$${MONGO_URI/@mongo:/@localhost:}" REDIS_ADDR=localhost:6379 SMTP_HOST=localhost
+
 run: env network ## Run the API on the host, with Mongo and Redis from compose
 	$(COMPOSE) up -d --wait mongo redis mailpit
-	set -a && . ./.env && set +a && \
-	MONGO_URI="$${MONGO_URI/@mongo:/@localhost:}" REDIS_ADDR=localhost:6379 SMTP_HOST=localhost \
-	go run -ldflags "-X main.version=$(VERSION)" ./cmd/api
+	$(HOST_ENV) go run -ldflags "-X main.version=$(VERSION)" ./cmd/api
+
+seed: env network ## Replace the local demo user (demo@monthra.local) and its fake data; SEED_PASSWORD in .env picks the password
+	$(COMPOSE) up -d --wait mongo redis
+	$(HOST_ENV) go run ./cmd/api seed
 
 test: ## Unit tests with the race detector
 	go test -race ./...

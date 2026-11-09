@@ -92,6 +92,20 @@ func TestTransactionsOccurrences(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, listed)
 
+	// Earlier occurrences: strictly before the day, of this recurrence and owner.
+	earlier, err := store.HasOccurrencesBefore(ctx, a.owner, recID, mustDay(t, "2026-08-06"))
+	require.NoError(t, err)
+	assert.True(t, earlier)
+	earlier, err = store.HasOccurrencesBefore(ctx, a.owner, recID, mustDay(t, "2026-08-05"))
+	require.NoError(t, err)
+	assert.False(t, earlier, "the first one is not before itself")
+	earlier, err = store.HasOccurrencesBefore(ctx, b.owner, recID, mustDay(t, "2027-01-01"))
+	require.NoError(t, err)
+	assert.False(t, earlier, "another user's recurrence")
+	earlier, err = store.HasOccurrencesBefore(ctx, a.owner, "not-an-id", mustDay(t, "2027-01-01"))
+	require.NoError(t, err)
+	assert.False(t, earlier)
+
 	// Another user never reads or deletes them.
 	got, err := store.Occurrences(ctx, b.owner, recID, domain.Date{})
 	require.NoError(t, err)
@@ -166,6 +180,13 @@ func TestOccurrencesQueriesReadOnlyTheirEntries(t *testing.T) {
 	})
 	assert.LessOrEqual(t, op.KeysExamined, 12, "a page of one recurrence: %s", op.PlanSummary)
 	assert.NotContains(t, op.PlanSummary, "SORT {", "the index gives the order")
+
+	op = profile(t, db, func() {
+		earlier, err := store.HasOccurrencesBefore(ctx, l.owner, recID, mustDay(t, "2026-12-05"))
+		require.NoError(t, err)
+		assert.True(t, earlier)
+	})
+	assert.LessOrEqual(t, op.KeysExamined, 2, "the first earlier one: %s", op.PlanSummary)
 
 	op = profile(t, db, func() {
 		require.NoError(t, store.DeleteOccurrences(ctx, l.owner, recID, mustDay(t, "2026-12-05")))

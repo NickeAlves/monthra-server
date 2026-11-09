@@ -85,3 +85,14 @@ func TestMonthDay(t *testing.T) {
 		assert.Equal(t, tc.want, month(t, tc.month).Day(tc.day).String(), "%s day %d", tc.month, tc.day)
 	}
 }
+
+func TestMonthLastDay(t *testing.T) {
+	for m, want := range map[Month]string{
+		NewMonth(2026, time.November): "2026-11-30",
+		NewMonth(2026, time.December): "2026-12-31",
+		NewMonth(2027, time.February): "2027-02-28",
+		NewMonth(2028, time.February): "2028-02-29",
+	} {
+		assert.Equal(t, want, m.LastDay().String(), m.String())
+	}
+}

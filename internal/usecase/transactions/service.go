@@ -41,6 +41,7 @@ type Service struct {
 	categories Categories
 	metrics    Metrics
 	series     Series
+	invalidate Invalidator
 	now        func() time.Time
 }
 
@@ -52,7 +53,13 @@ type Options struct {
 	Metrics Metrics
 	// Series defaults to no recurrences.
 	Series Series
+	// Invalidator is told of every write; it defaults to none.
+	Invalidator Invalidator
 }
+
+type noInvalidator struct{}
+
+func (noInvalidator) Invalidate(context.Context, string) {}
 
 type noMetrics struct{}
 
@@ -76,7 +83,13 @@ func NewService(store Store, accounts Accounts, categories Categories, o Options
 	if o.Series == nil {
 		o.Series = noSeries{}
 	}
-	return &Service{store: store, accounts: accounts, categories: categories, metrics: o.Metrics, series: o.Series, now: o.Now}
+	if o.Invalidator == nil {
+		o.Invalidator = noInvalidator{}
+	}
+	return &Service{
+		store: store, accounts: accounts, categories: categories, metrics: o.Metrics, series: o.Series,
+		invalidate: o.Invalidator, now: o.Now,
+	}
 }
 
 // clock is the current time at the precision MongoDB keeps (milliseconds),
@@ -131,6 +144,8 @@ func (s *Service) Create(ctx context.Context, userID string, in domain.Transacti
 	if err != nil {
 		return domain.Transaction{}, err
 	}
+	// After the attempt, even a failed one: a partial write may be stored.
+	defer s.invalidate.Invalidate(ctx, userID)
 	var created []domain.Transaction
 	if len(ts) == 1 {
 		var t domain.Transaction
@@ -205,6 +220,9 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 	if err != nil {
 		return domain.Transaction{}, err
 	}
+	if len(edit.Others) > 0 || edit.Changed {
+		defer s.invalidate.Invalidate(ctx, userID)
+	}
 	// The others first, then the recurrence, and this one last: until this
 	// one is stored, sending the same patch again finds the same changes on
 	// it and completes them.
@@ -235,6 +253,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 // first, so no read creates occurrences again meanwhile. It answers
 // domain.ErrNotFound for a transaction the caller does not hold.
 func (s *Service) Delete(ctx context.Context, userID, id string, scope domain.EditScope) error {
+	defer s.invalidate.Invalidate(ctx, userID)
 	if scope != domain.ScopeThis {
 		current, err := s.Get(ctx, userID, id)
 		if err != nil {

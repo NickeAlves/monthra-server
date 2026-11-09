@@ -35,6 +35,7 @@ type Service struct {
 	accounts   Accounts
 	categories Categories
 	metrics    Metrics
+	invalidate Invalidator
 	logger     *slog.Logger
 	now        func() time.Time
 	max        int
@@ -50,11 +51,18 @@ type Options struct {
 	Metrics Metrics
 	// MaxRecurrences defaults to DefaultMaxRecurrences.
 	MaxRecurrences int
+	// Invalidator is told of every write (occurrences created included);
+	// it defaults to none.
+	Invalidator Invalidator
 }
 
 type noMetrics struct{}
 
 func (noMetrics) TransactionCreated(string) {}
+
+type noInvalidator struct{}
+
+func (noInvalidator) Invalidate(context.Context, string) {}
 
 // NewService returns the service.
 func NewService(store Store, ledger Ledger, accounts Accounts, categories Categories, o Options) *Service {
@@ -70,9 +78,12 @@ func NewService(store Store, ledger Ledger, accounts Accounts, categories Catego
 	if o.MaxRecurrences <= 0 {
 		o.MaxRecurrences = DefaultMaxRecurrences
 	}
+	if o.Invalidator == nil {
+		o.Invalidator = noInvalidator{}
+	}
 	return &Service{
 		store: store, ledger: ledger, accounts: accounts, categories: categories,
-		metrics: o.Metrics, logger: o.Logger, now: o.Now, max: o.MaxRecurrences,
+		metrics: o.Metrics, invalidate: o.Invalidator, logger: o.Logger, now: o.Now, max: o.MaxRecurrences,
 	}
 }
 
@@ -83,27 +94,20 @@ func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Millise
 // horizon is the last day whose occurrences are created: asOf, the
 // reader's local today (zero is today in UTC), within a day of today in
 // UTC, which every time zone's today is. So no reader creates the future.
-func (s *Service) horizon(asOf domain.Date) domain.Date {
-	today := domain.DateOf(s.now().UTC())
-	switch {
-	case asOf.IsZero():
-		return today
-	case asOf.Before(today.AddDays(-1)):
-		return today.AddDays(-1)
-	case today.AddDays(1).Before(asOf):
-		return today.AddDays(1)
-	default:
-		return asOf
-	}
-}
+func (s *Service) horizon(asOf domain.Date) domain.Date { return domain.Today(asOf, s.now()) }
 
 // Materialize creates the occurrences of the caller's recurrences due up
 // to asOf (see horizon), at most MaxOccurrencesPerPass; the rest come with
 // the next read. It runs before every read of the transactions, so it
 // never fails one: a failure is logged and the read goes on with what was
-// stored.
+// stored. Creating any occurrence (even in a pass that fails later)
+// invalidates what is cached of the caller's data.
 func (s *Service) Materialize(ctx context.Context, userID string, asOf domain.Date) {
-	if err := s.materialize(ctx, userID, s.horizon(asOf)); err != nil {
+	created, err := s.materialize(ctx, userID, s.horizon(asOf))
+	if created > 0 {
+		s.invalidate.Invalidate(ctx, userID)
+	}
+	if err != nil {
 		s.logger.WarnContext(ctx, "materialize recurrences failed", "error", err)
 	}
 }
@@ -112,18 +116,19 @@ func (s *Service) Materialize(ctx context.Context, userID string, asOf domain.Da
 // recurrence stores its occurrences first and advances after, with a
 // compare-and-set: a pass interrupted, or two readers at once, store the
 // same occurrences again, which the store skips, and advance once.
-func (s *Service) materialize(ctx context.Context, userID string, through domain.Date) error {
+func (s *Service) materialize(ctx context.Context, userID string, through domain.Date) (int, error) {
 	due, err := s.store.Due(ctx, userID, through, s.max)
 	if err != nil {
-		return fmt.Errorf("find due recurrences: %w", err)
+		return 0, fmt.Errorf("find due recurrences: %w", err)
 	}
 	if len(due) == 0 {
-		return nil
+		return 0, nil
 	}
 	accounts, err := s.accountsOf(ctx, userID)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	total := 0
 	now := s.clock()
 	budget := MaxOccurrencesPerPass
 	for _, r := range due {
@@ -139,20 +144,21 @@ func (s *Service) materialize(ctx context.Context, userID string, through domain
 			continue
 		}
 		created, err := s.ledger.InsertOccurrences(ctx, ts)
+		total += created
 		if err != nil {
-			return fmt.Errorf("create occurrences: %w", err)
+			return total, fmt.Errorf("create occurrences: %w", err)
 		}
 		for range created {
 			s.metrics.TransactionCreated(string(r.Kind))
 		}
 		if err := s.store.Advance(ctx, userID, r.ID, r.Next, next, ts[len(ts)-1].Recurrence.Date); err != nil {
-			return fmt.Errorf("advance recurrence: %w", err)
+			return total, fmt.Errorf("advance recurrence: %w", err)
 		}
 		if budget -= len(ts); budget <= 0 {
 			break
 		}
 	}
-	return nil
+	return total, nil
 }
 
 // accountSet is the caller's accounts by id.
@@ -218,6 +224,8 @@ func (s *Service) Create(ctx context.Context, userID string, in domain.Recurrenc
 	if n >= s.max {
 		return domain.Recurrence{}, domain.ErrLimitReached
 	}
+	// What is still to come changes the dashboard of the months ahead.
+	defer s.invalidate.Invalidate(ctx, userID)
 	created, err := s.store.Insert(ctx, r)
 	if err != nil {
 		return domain.Recurrence{}, fmt.Errorf("create recurrence: %w", err)
@@ -282,6 +290,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Recurr
 	if !changed {
 		return current, nil
 	}
+	defer s.invalidate.Invalidate(ctx, userID)
 	if err := s.store.Update(ctx, next); err != nil {
 		return domain.Recurrence{}, fmt.Errorf("update recurrence: %w", err)
 	}
@@ -304,6 +313,7 @@ func (s *Service) ref(ctx context.Context, userID string, patch *string, current
 // Delete removes one of the caller's recurrences, or answers
 // domain.ErrNotFound. Its transactions stay, still linked to it.
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
+	defer s.invalidate.Invalidate(ctx, userID)
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete recurrence: %w", err)
 	}
@@ -358,6 +368,30 @@ func (s *Service) Upcoming(ctx context.Context, userID string, to, asOf domain.D
 	return out, nil
 }
 
+// Scheduled returns what the caller's recurrences are still to create from
+// day from through day to (both included), the earliest first: a
+// projection, stored nowhere, with no invoice. It creates nothing (the
+// caller materializes first) and the caller bounds the span: the dashboard
+// asks for one month.
+func (s *Service) Scheduled(ctx context.Context, userID string, from, to domain.Date) ([]domain.Transaction, error) {
+	list, err := s.store.List(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list recurrences: %w", err)
+	}
+	now := s.clock()
+	out := []domain.Transaction{}
+	for _, r := range list {
+		out = append(out, r.Between(from, to, now)...)
+	}
+	slices.SortStableFunc(out, func(a, b domain.Transaction) int {
+		if c := a.Date.Time().Compare(b.Date.Time()); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Recurrence.ID, b.Recurrence.ID)
+	})
+	return out, nil
+}
+
 // AccountUsage reports whether a recurrence of the caller names account
 // id, and whether one of those is still active.
 func (s *Service) AccountUsage(ctx context.Context, userID, id string) (used, active bool, err error) {
@@ -385,14 +419,21 @@ func (s *Service) Follow(ctx context.Context, before, after domain.Transaction) 
 }
 
 // EndBefore ends the recurrence of an occurrence on the day before the
-// occurrence's rule day, so it creates nothing from there on; when that
-// leaves it no day at all, the recurrence goes.
+// occurrence's rule day, so it creates nothing from there on. When that
+// leaves it no day at all, the recurrence goes, unless occurrences from
+// before that day remain: then it stays, ended, so they still name it.
 func (s *Service) EndBefore(ctx context.Context, occurrence domain.Transaction) error {
 	r, ok, err := s.recurrenceOf(ctx, occurrence)
 	if err != nil || !ok {
 		return err
 	}
-	next, keep := r.EndBefore(occurrence.Recurrence.Date, s.clock())
+	day, hasEarlier := occurrence.Recurrence.Date, false
+	if !r.Rule.Start.Before(day) {
+		if hasEarlier, err = s.ledger.HasOccurrencesBefore(ctx, r.UserID, r.ID, day); err != nil {
+			return fmt.Errorf("find earlier occurrences: %w", err)
+		}
+	}
+	next, keep := r.EndBefore(day, hasEarlier, s.clock())
 	if !keep {
 		return ignoreGone(s.store.Delete(ctx, r.UserID, r.ID), "delete recurrence")
 	}

@@ -48,3 +48,9 @@ type Recurrences interface {
 	// and whether one of those is still active.
 	AccountUsage(ctx context.Context, userID, id string) (used, active bool, err error)
 }
+
+// Invalidator drops what is cached from a user's finance data (the
+// dashboard summaries) after a write to it. It never fails.
+type Invalidator interface {
+	Invalidate(ctx context.Context, userID string)
+}

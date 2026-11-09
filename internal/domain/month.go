@@ -73,6 +73,9 @@ func (m Month) AddMonths(k int) Month { return Month{m.n + k} }
 // Sub returns how many months m comes after o (negative when before).
 func (m Month) Sub(o Month) int { return m.n - o.n }
 
+// LastDay returns the last day of m.
+func (m Month) LastDay() Date { return m.Day(31) }
+
 // Day returns day d of m, or the last day of m when m is shorter: day 31
 // of February is February 28 (29 in a leap year).
 func (m Month) Day(d int) Date {

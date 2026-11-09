@@ -40,6 +40,23 @@ func ParseDate(s string) (Date, error) {
 	return d, nil
 }
 
+// Today is the reader's today: asOf (their local day; zero is today in UTC)
+// within a day of today in UTC, which every time zone's today is. So no
+// reader reaches into the future by naming a later day.
+func Today(asOf Date, now time.Time) Date {
+	today := DateOf(now.UTC())
+	switch {
+	case asOf.IsZero():
+		return today
+	case asOf.Before(today.AddDays(-1)):
+		return today.AddDays(-1)
+	case today.AddDays(1).Before(asOf):
+		return today.AddDays(1)
+	default:
+		return asOf
+	}
+}
+
 // String writes the day as "YYYY-MM-DD".
 func (d Date) String() string { return d.t.Format(dateLayout) }
 

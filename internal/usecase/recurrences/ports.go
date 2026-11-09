@@ -41,6 +41,9 @@ type Ledger interface {
 	// InsertOccurrences stores the occurrences ts and returns how many were
 	// new; one already stored for its recurrence and rule day is skipped.
 	InsertOccurrences(ctx context.Context, ts []domain.Transaction) (int, error)
+	// HasOccurrencesBefore reports whether recurrence recurrenceID of userID
+	// has occurrences whose rule day comes before day.
+	HasOccurrencesBefore(ctx context.Context, userID, recurrenceID string, day domain.Date) (bool, error)
 }
 
 // Accounts finds the caller's accounts a recurrence names.
@@ -57,4 +60,10 @@ type Categories interface {
 // Metrics counts the transactions created.
 type Metrics interface {
 	TransactionCreated(kind string)
+}
+
+// Invalidator drops what is cached from a user's finance data (the
+// dashboard summaries) after a write to it. It never fails.
+type Invalidator interface {
+	Invalidate(ctx context.Context, userID string)
 }

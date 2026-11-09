@@ -355,6 +355,17 @@ func (r *Transactions) Occurrences(ctx context.Context, userID, recurrenceID str
 	return out, nil
 }
 
+// HasOccurrencesBefore reports whether recurrence recurrenceID of userID has
+// occurrences whose rule day comes before day.
+func (r *Transactions) HasOccurrencesBefore(ctx context.Context, userID, recurrenceID string, day domain.Date) (bool, error) {
+	filter, err := inRecurrence(userID, recurrenceID, domain.Date{})
+	if err != nil {
+		return false, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	filter = append(filter, bson.E{Key: "occurrence_date", Value: bson.D{{Key: "$lt", Value: day.Time()}}})
+	return r.exists(ctx, filter)
+}
+
 // DeleteOccurrences removes the occurrences of recurrence recurrenceID of
 // userID whose rule day is from or later (all of them when from is zero);
 // deleting them again is a no-op.
@@ -648,22 +659,9 @@ func (r *Transactions) Balances(ctx context.Context, userID string, accountIDs [
 		match = eitherLeg(uid, bson.D{{Key: "account_id", Value: in}}, bson.D{{Key: "to_account_id", Value: in}}, nil)
 		legMatch = bson.D{{Key: "legs.account", Value: in}}
 	}
-	// Each transaction moves its account (income in, expenses and transfers
-	// out) and, on a transfer, its destination (to_amount in).
-	signed := bson.D{{Key: "$cond", Value: bson.A{
-		bson.D{{Key: "$eq", Value: bson.A{"$kind", string(domain.TransactionIncome)}}},
-		"$amount",
-		bson.D{{Key: "$multiply", Value: bson.A{"$amount", -1}}},
-	}}}
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: match}},
-		{{Key: "$project", Value: bson.D{
-			{Key: "date", Value: 1},
-			{Key: "legs", Value: bson.A{
-				bson.D{{Key: "account", Value: "$account_id"}, {Key: "value", Value: signed}},
-				bson.D{{Key: "account", Value: "$to_account_id"}, {Key: "value", Value: "$to_amount"}},
-			}},
-		}}},
+		{{Key: "$project", Value: bson.D{{Key: "date", Value: 1}, {Key: "legs", Value: signedLegs()}}}},
 		{{Key: "$unwind", Value: "$legs"}},
 		{{Key: "$match", Value: legMatch}},
 		{{Key: "$group", Value: bson.D{
@@ -684,6 +682,132 @@ func (r *Transactions) Balances(ctx context.Context, userID string, accountIDs [
 	}
 	for _, d := range docs {
 		out[d.Account.Hex()] = domain.Balance{Current: d.Current, Projected: d.Projected}
+	}
+	return out, nil
+}
+
+// signedLegs is what a transaction moves on each of its legs: its account
+// (income in, expenses and transfers out) and, on a transfer, its
+// destination (to_amount in). The destination leg of any other transaction
+// has a null account.
+func signedLegs() bson.A {
+	signed := bson.D{{Key: "$cond", Value: bson.A{
+		bson.D{{Key: "$eq", Value: bson.A{"$kind", string(domain.TransactionIncome)}}},
+		"$amount",
+		bson.D{{Key: "$multiply", Value: bson.A{"$amount", -1}}},
+	}}}
+	return bson.A{
+		bson.D{{Key: "account", Value: "$account_id"}, {Key: "value", Value: signed}},
+		bson.D{{Key: "account", Value: "$to_account_id"}, {Key: "value", Value: "$to_amount"}},
+	}
+}
+
+// monthOfDate is the month ("YYYY-MM") of a transaction's day, stored at
+// midnight UTC.
+var monthOfDate = bson.D{{Key: "$dateToString", Value: bson.D{{Key: "format", Value: "%Y-%m"}, {Key: "date", Value: "$date"}}}}
+
+// flowDoc is one group of Flows.
+type flowDoc struct {
+	ID struct {
+		Month    string         `bson:"month"`
+		Currency string         `bson:"currency"`
+		Kind     string         `bson:"kind"`
+		Category *bson.ObjectID `bson:"category"`
+	} `bson:"_id"`
+	Amount int64 `bson:"amount"`
+	Count  int   `bson:"count"`
+}
+
+// Flows sums the expenses and the income of userID from day from to day to
+// (both included) by month, currency, kind and category; transfers are
+// left out. It reads the transactions of those days only.
+func (r *Transactions) Flows(ctx context.Context, userID string, from, to domain.Date) ([]domain.FlowSum, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return []domain.FlowSum{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "user_id", Value: uid},
+			{Key: "date", Value: bson.D{{Key: "$gte", Value: from.Time()}, {Key: "$lte", Value: to.Time()}}},
+			{Key: "kind", Value: bson.D{{Key: "$in", Value: bson.A{string(domain.TransactionExpense), string(domain.TransactionIncome)}}}},
+		}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "month", Value: monthOfDate},
+				{Key: "currency", Value: "$currency"},
+				{Key: "kind", Value: "$kind"},
+				{Key: "category", Value: "$category_id"},
+			}},
+			{Key: "amount", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
+			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+		}}},
+	}
+	cur, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("sum flows: %w", err)
+	}
+	var docs []flowDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode flows: %w", err)
+	}
+	out := make([]domain.FlowSum, len(docs))
+	for i, d := range docs {
+		out[i] = domain.FlowSum{
+			Month: storedMonth(d.ID.Month), Currency: d.ID.Currency, Kind: domain.TransactionKind(d.ID.Kind),
+			Amount: d.Amount, Count: d.Count,
+		}
+		if d.ID.Category != nil {
+			out[i].CategoryID = d.ID.Category.Hex()
+		}
+	}
+	return out, nil
+}
+
+// legSumDoc is one group of LegSums.
+type legSumDoc struct {
+	ID struct {
+		Account bson.ObjectID `bson:"account"`
+		Month   string        `bson:"month"`
+	} `bson:"_id"`
+	Sum int64 `bson:"sum"`
+}
+
+// LegSums sums what the transactions of userID up to day through (included)
+// moved on each account, by month from month from on, and in one sum (the
+// zero Month) before it. An account without transactions is missing.
+func (r *Transactions) LegSums(ctx context.Context, userID string, from domain.Month, through domain.Date) ([]domain.LegSum, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return []domain.LegSum{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	bucket := bson.D{{Key: "$cond", Value: bson.A{
+		bson.D{{Key: "$lt", Value: bson.A{"$date", from.Day(1).Time()}}}, "", monthOfDate,
+	}}}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "user_id", Value: uid},
+			{Key: "date", Value: bson.D{{Key: "$lte", Value: through.Time()}}},
+		}}},
+		{{Key: "$project", Value: bson.D{{Key: "month", Value: bucket}, {Key: "legs", Value: signedLegs()}}}},
+		{{Key: "$unwind", Value: "$legs"}},
+		{{Key: "$match", Value: bson.D{{Key: "legs.account", Value: bson.D{{Key: "$ne", Value: nil}}}}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "account", Value: "$legs.account"}, {Key: "month", Value: "$month"}}},
+			{Key: "sum", Value: bson.D{{Key: "$sum", Value: "$legs.value"}}},
+		}}},
+	}
+	cur, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("sum legs: %w", err)
+	}
+	var docs []legSumDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode legs: %w", err)
+	}
+	out := make([]domain.LegSum, len(docs))
+	for i, d := range docs {
+		out[i] = domain.LegSum{AccountID: d.ID.Account.Hex(), Month: storedMonth(d.ID.Month), Sum: d.Sum}
 	}
 	return out, nil
 }

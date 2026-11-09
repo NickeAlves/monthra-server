@@ -138,8 +138,18 @@ func (m *memStore) AccountUsage(_ context.Context, userID, id string) (bool, boo
 // memLedger stores occurrences once per recurrence and rule day, as the
 // unique index does.
 type memLedger struct {
-	stored []domain.Transaction
-	err    error
+	stored     []domain.Transaction
+	err        error
+	earlierErr error
+}
+
+func (l *memLedger) HasOccurrencesBefore(_ context.Context, _, recurrenceID string, day domain.Date) (bool, error) {
+	if l.earlierErr != nil {
+		return false, l.earlierErr
+	}
+	return slices.ContainsFunc(l.stored, func(o domain.Transaction) bool {
+		return o.Recurrence.ID == recurrenceID && o.Recurrence.Date.Before(day)
+	}), nil
 }
 
 func (l *memLedger) InsertOccurrences(_ context.Context, ts []domain.Transaction) (int, error) {
@@ -217,6 +227,11 @@ type countingMetrics struct{ created []string }
 
 func (m *countingMetrics) TransactionCreated(kind string) { m.created = append(m.created, kind) }
 
+// countingInvalidator counts the invalidations of each user.
+type countingInvalidator map[string]int
+
+func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+
 type fixture struct {
 	svc     *Service
 	store   *memStore
@@ -224,6 +239,7 @@ type fixture struct {
 	refs    *refs
 	metrics *countingMetrics
 	logs    *bytes.Buffer
+	invalid countingInvalidator
 }
 
 func newFixture() fixture {
@@ -245,11 +261,12 @@ func newFixture() fixture {
 			"salary": {ID: "salary", UserID: "u1", Kind: domain.CategoryIncome},
 		},
 	}
-	store, ledger, metrics, logs := newMemStore(), &memLedger{}, &countingMetrics{}, &bytes.Buffer{}
+	store, ledger, metrics, logs, invalid := newMemStore(), &memLedger{}, &countingMetrics{}, &bytes.Buffer{}, countingInvalidator{}
 	svc := NewService(store, ledger, r, categoryFinder{r}, Options{
 		Now: func() time.Time { return t0 }, Metrics: metrics, Logger: slog.New(slog.NewTextHandler(logs, nil)),
+		Invalidator: invalid,
 	})
-	return fixture{svc: svc, store: store, ledger: ledger, refs: r, metrics: metrics, logs: logs}
+	return fixture{svc: svc, store: store, ledger: ledger, refs: r, metrics: metrics, logs: logs, invalid: invalid}
 }
 
 func rent(start string) domain.RecurrenceInput {
@@ -612,4 +629,111 @@ func TestNewServiceDefaults(t *testing.T) {
 	assert.NotNil(t, svc.now())
 	svc.metrics.TransactionCreated("expense")
 	svc.Materialize(context.Background(), "u1", domain.Date{})
+}
+
+func TestEndBeforeKeepsAMovedRecurrence(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture()
+	r, err := f.svc.Create(ctx, "u1", rent("2026-08-05"), domain.Date{})
+	require.NoError(t, err)
+	require.Len(t, f.ledger.stored, 4, "August to November")
+	// The start moves past them: they stay, linked to the recurrence.
+	_, err = f.svc.Update(ctx, "u1", r.ID, domain.RecurrencePatch{StartDate: ptr("2027-01-10")}, domain.Date{})
+	require.NoError(t, err)
+	occurrence := f.ledger.stored[2]
+	occurrence.UserID = "u1"
+
+	f.ledger.earlierErr = errors.New("mongo down")
+	assert.Error(t, f.svc.EndBefore(ctx, occurrence))
+	f.ledger.earlierErr = nil
+
+	// Cutting before the start with August and September left: ended, kept.
+	require.NoError(t, f.svc.EndBefore(ctx, occurrence))
+	kept := f.store.recs[r.ID]
+	assert.Equal(t, "2026-10-04", kept.Rule.End.String())
+	assert.Equal(t, "2027-01-10", kept.Rule.Start.String())
+	assert.False(t, kept.Active())
+
+	// From the first one, nothing is left before the cut: it goes.
+	first := f.ledger.stored[0]
+	first.UserID = "u1"
+	require.NoError(t, f.svc.EndBefore(ctx, first))
+	assert.NotContains(t, f.store.recs, r.ID)
+}
+
+func TestWritesInvalidate(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture()
+
+	// A start in the past creates its history: the insert and the pass.
+	r, err := f.svc.Create(ctx, "u1", rent("2026-08-05"), domain.Date{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, f.invalid["u1"])
+	future, err := f.svc.Create(ctx, "u1", rent("2027-01-10"), domain.Date{})
+	require.NoError(t, err)
+	assert.Equal(t, 3, f.invalid["u1"], "nothing due: the insert only")
+
+	// Reads with nothing due, and patches that change nothing, invalidate
+	// nothing.
+	_, err = f.svc.List(ctx, "u1", domain.Date{})
+	require.NoError(t, err)
+	_, err = f.svc.Update(ctx, "u1", r.ID, domain.RecurrencePatch{Amount: ptr(r.Amount)}, domain.Date{})
+	require.NoError(t, err)
+	assert.Equal(t, 3, f.invalid["u1"])
+
+	_, err = f.svc.Update(ctx, "u1", future.ID, domain.RecurrencePatch{Amount: ptr(int64(1))}, domain.Date{})
+	require.NoError(t, err)
+	assert.Equal(t, 4, f.invalid["u1"])
+	require.NoError(t, f.svc.Delete(ctx, "u1", future.ID))
+	assert.Equal(t, 5, f.invalid["u1"])
+	assert.Error(t, f.svc.Delete(ctx, "u1", future.ID))
+	assert.Equal(t, 6, f.invalid["u1"], "an attempt counts: a write may have happened")
+
+	// A pass that creates occurrences and then fails still invalidates.
+	f.store.recs[r.ID] = func() domain.Recurrence {
+		x := f.store.recs[r.ID]
+		x.Next = day(t, "2026-11-01")
+		return x
+	}()
+	f.store.err = errors.New("mongo down")
+	f.svc.Materialize(ctx, "u1", domain.Date{})
+	assert.Equal(t, 7, f.invalid["u1"])
+	assert.Zero(t, f.invalid["u2"])
+}
+
+func TestScheduled(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture()
+	_, err := f.svc.Create(ctx, "u1", rent("2026-08-05"), domain.Date{})
+	require.NoError(t, err)
+	salary := domain.RecurrenceInput{
+		Kind: "income", AccountID: "bank", CategoryID: "salary", Amount: 900000, Frequency: "monthly", StartDate: "2026-09-01",
+	}
+	_, err = f.svc.Create(ctx, "u1", salary, domain.Date{})
+	require.NoError(t, err)
+	_, err = f.svc.Create(ctx, "u1", rent("2026-11-20"), domain.Date{})
+	require.NoError(t, err)
+
+	got, err := f.svc.Scheduled(ctx, "u1", day(t, "2026-11-01"), day(t, "2026-11-30"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"2026-11-20"}, dates(got), "the rent of the 5th and the salary are created already")
+	got, err = f.svc.Scheduled(ctx, "u1", day(t, "2026-12-01"), day(t, "2026-12-31"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"2026-12-01", "2026-12-05", "2026-12-20"}, dates(got), "the earliest first")
+	assert.Equal(t, domain.TransactionIncome, got[0].Kind)
+	none, err := f.svc.Scheduled(ctx, "u2", day(t, "2026-12-01"), day(t, "2026-12-31"))
+	require.NoError(t, err)
+	assert.Equal(t, []domain.Transaction{}, none)
+
+	f.store.err = errors.New("mongo down")
+	_, err = f.svc.Scheduled(ctx, "u1", day(t, "2026-12-01"), day(t, "2026-12-31"))
+	assert.Error(t, err)
+}
+
+func dates(ts []domain.Transaction) []string {
+	out := []string{}
+	for _, tx := range ts {
+		out = append(out, tx.Date.String())
+	}
+	return out
 }

@@ -126,12 +126,7 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Metrics: metrics,
 		// Feature data first (newFeatures), then the auth stores; the account
 		// itself goes last.
-		Erasers: append(slices.Clone(d.featureErasers),
-			repomongo.NewUserEraser(d.db, repomongo.CollAuthTokens),
-			repomongo.NewUserEraser(d.db, repomongo.CollRefreshTokens),
-			repomongo.NewUserEraser(d.db, repomongo.CollSessions),
-			locales,
-		),
+		Erasers: append(slices.Clone(d.featureErasers), authErasers(d.db, locales)...),
 	}, authuc.Options{
 		RefreshTTL:    cfg.Auth.RefreshTokenTTL,
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,
@@ -151,4 +146,16 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		locales:       profiles,
 		authenticator: middleware.AuthOptions{Tokens: tokens, Revocations: revocations, Cookies: d.cookies, Logger: logger},
 	}, nil
+}
+
+// authErasers delete what the auth stores hold of a user. They run after
+// the feature erasers, before the user document goes (DELETE /me, and the
+// demo user of make seed).
+func authErasers(db *mongo.Database, locales cache.UserLocales) []authuc.UserDataEraser {
+	return []authuc.UserDataEraser{
+		repomongo.NewUserEraser(db, repomongo.CollAuthTokens),
+		repomongo.NewUserEraser(db, repomongo.CollRefreshTokens),
+		repomongo.NewUserEraser(db, repomongo.CollSessions),
+		locales,
+	}
 }

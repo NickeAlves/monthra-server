@@ -13,10 +13,11 @@ import (
 
 func TestKeysAreNamespacedByEnv(t *testing.T) {
 	assert.Equal(t, "monthra:local:rl:login:ip", NewKeys(config.EnvLocal).Key("rl", "login", "ip"))
-	assert.Equal(t, "monthra:production:summary:u1:2026-11", NewKeys(config.EnvProduction).MonthlySummary("u1", "2026-11"))
+	assert.Equal(t, "monthra:production:summary:u1:ver", NewKeys(config.EnvProduction).SummaryVersion("u1"))
+	assert.Equal(t, "monthra:production:summary:u1:abc:v1:2026-11", NewKeys(config.EnvProduction).Summary("u1", "abc", "v1:2026-11"))
 	assert.NotEqual(t,
-		NewKeys(config.EnvStaging).MonthlySummary("u1", "2026-11"),
-		NewKeys(config.EnvProduction).MonthlySummary("u1", "2026-11"),
+		NewKeys(config.EnvStaging).Summary("u1", "abc", "v1:2026-11"),
+		NewKeys(config.EnvProduction).Summary("u1", "abc", "v1:2026-11"),
 	)
 }
 

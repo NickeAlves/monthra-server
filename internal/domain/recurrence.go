@@ -411,6 +411,27 @@ func (r Recurrence) Occurrences(refs TransactionRefs, through Date, max int, now
 	return out, next
 }
 
+// Between returns the transactions r is still to create from day from
+// through day to (both included): those from its next occurrence on, so
+// never one already created. It is a projection, with no invoice; an ended
+// recurrence has none.
+func (r Recurrence) Between(from, to Date, now time.Time) []Transaction {
+	if !r.Active() || to.Before(from) {
+		return nil
+	}
+	p := r
+	if p.Next.Before(from) {
+		next, ok := r.Rule.NextOn(from)
+		if !ok {
+			return nil
+		}
+		p.Next = next
+	}
+	// At most one a day.
+	ts, _ := p.Occurrences(TransactionRefs{}, to, to.daysSince(from)+1, now)
+	return ts
+}
+
 // invoiceOn is the invoice of a leg on account id on day: the one pick
 // finds when acc (what the caller found for id) is a credit card, none
 // otherwise.
@@ -438,10 +459,13 @@ func (r Recurrence) Follow(before, after Transaction, now time.Time) (Recurrence
 }
 
 // EndBefore ends r on the day before day, so it creates nothing from day
-// on. It returns false when that leaves the rule no day at all (day is on
-// or before its start): the whole recurrence goes then.
-func (r Recurrence) EndBefore(day Date, now time.Time) (Recurrence, bool) {
-	if !r.Rule.Start.Before(day) {
+// on. When that leaves the rule no day at all (day is on or before its
+// start), it returns false and the whole recurrence goes, unless
+// hasEarlier: occurrences from before day remain (they came before a start
+// moved past them), so r stays as an ended rule, with no next occurrence
+// and an end before its start.
+func (r Recurrence) EndBefore(day Date, hasEarlier bool, now time.Time) (Recurrence, bool) {
+	if !r.Rule.Start.Before(day) && !hasEarlier {
 		return Recurrence{}, false
 	}
 	next := r

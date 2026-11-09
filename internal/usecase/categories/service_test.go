@@ -494,3 +494,28 @@ func TestDeleteCategoryOfARecurrence(t *testing.T) {
 	recurrences.moveErr, recurrences.err = nil, errors.New("mongo down")
 	assert.ErrorContains(t, svc.Delete(ctx, "u1", spare.ID, ""), "check category use: mongo down")
 }
+
+// countingInvalidator counts the invalidations of each user.
+type countingInvalidator map[string]int
+
+func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+
+func TestDeleteInvalidatesWhenItMovesTransactions(t *testing.T) {
+	ctx := context.Background()
+	store, usage, invalid := newMemStore(), newMemUsage(), countingInvalidator{}
+	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }, Invalidator: invalid})
+	food, err := svc.Create(ctx, "u1", food())
+	require.NoError(t, err)
+	fun, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Fun", Kind: "expense", Icon: "party-popper", Color: "#00AA00"})
+	require.NoError(t, err)
+	spare, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Spare", Kind: "expense", Icon: "gift", Color: "#0000AA"})
+	require.NoError(t, err)
+	_, err = svc.Update(ctx, "u1", fun.ID, domain.CategoryPatch{Name: ptr("Leisure")})
+	require.NoError(t, err)
+	require.NoError(t, svc.Delete(ctx, "u1", spare.ID, ""))
+	assert.Zero(t, invalid["u1"], "creating, renaming or deleting an unused category changes no sum")
+
+	usage.byCategory[food.ID] = 3
+	require.NoError(t, svc.Delete(ctx, "u1", food.ID, fun.ID))
+	assert.Equal(t, 1, invalid["u1"])
+}

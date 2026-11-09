@@ -307,20 +307,38 @@ func TestRecurrenceFollow(t *testing.T) {
 
 func TestRecurrenceEndBefore(t *testing.T) {
 	r := rent(t, "2026-11-05")
-	ended, keep := r.EndBefore(day(t, "2026-10-05"), txNow)
+	ended, keep := r.EndBefore(day(t, "2026-10-05"), false, txNow)
 	require.True(t, keep)
 	assert.Equal(t, "2026-10-04", ended.Rule.End.String())
 	assert.False(t, ended.Active())
 
 	future := rent(t, "")
 	future.Rule.End = day(t, "2027-01-05")
-	ended, keep = future.EndBefore(day(t, "2027-03-05"), txNow)
+	ended, keep = future.EndBefore(day(t, "2027-03-05"), false, txNow)
 	require.True(t, keep)
 	assert.Equal(t, "2027-01-05", ended.Rule.End.String(), "an earlier end stays")
 	assert.True(t, ended.Active())
 
-	_, keep = r.EndBefore(day(t, "2026-08-05"), txNow)
+	_, keep = r.EndBefore(day(t, "2026-08-05"), false, txNow)
 	assert.False(t, keep, "nothing would be left")
+
+	// A start moved past older occurrences (August to November): cutting
+	// on or before it keeps the recurrence, ended, so those occurrences
+	// still name it.
+	moved := rent(t, "2026-11-05")
+	moved.Rule.Start, moved.Next = day(t, "2027-02-05"), day(t, "2027-02-05")
+	ended, keep = moved.EndBefore(day(t, "2026-10-05"), true, txNow)
+	require.True(t, keep)
+	assert.Equal(t, "2026-10-04", ended.Rule.End.String(), "before the start")
+	assert.False(t, ended.Active())
+	assert.Equal(t, "2027-02-05", ended.Rule.Start.String())
+	assert.Equal(t, txNow.UTC(), ended.UpdatedAt)
+	_, keep = moved.EndBefore(day(t, "2026-10-05"), false, txNow)
+	assert.False(t, keep, "nothing before the cut")
+	ended, keep = moved.EndBefore(day(t, "2027-02-05"), true, txNow)
+	require.True(t, keep)
+	assert.Equal(t, "2027-02-04", ended.Rule.End.String())
+	assert.False(t, ended.Active())
 }
 
 // occurrences returns the occurrences of r through day through as the
@@ -390,4 +408,39 @@ func TestApplyInScopeOnOccurrences(t *testing.T) {
 	edit, err = TransactionPatch{Amount: ptr(int64(1))}.ApplyInScope(ts[1], ScopeAll, moves, TransactionRefs{}, later)
 	require.NoError(t, err)
 	assert.Empty(t, edit.Others, "another recurrence's occurrences are left alone")
+}
+
+func TestRecurrenceBetween(t *testing.T) {
+	days := func(ts []Transaction) []string {
+		out := []string{}
+		for _, tx := range ts {
+			out = append(out, tx.Date.String())
+		}
+		return out
+	}
+	r := rent(t, "2026-11-05")
+	assert.Equal(t, []string{"2026-12-05"}, days(r.Between(day(t, "2026-12-01"), day(t, "2026-12-31"), txNow)))
+	assert.Empty(t, r.Between(day(t, "2026-11-01"), day(t, "2026-11-30"), txNow), "November's is created already")
+	assert.Equal(t, []string{"2026-12-05", "2027-01-05"}, days(r.Between(day(t, "2026-11-01"), day(t, "2027-01-31"), txNow)))
+	far := r.Between(day(t, "2030-03-01"), day(t, "2030-03-31"), txNow)
+	assert.Equal(t, []string{"2030-03-05"}, days(far), "years ahead, without walking there")
+	assert.Equal(t, "r", far[0].Recurrence.ID)
+	assert.Equal(t, int64(250000), far[0].Amount)
+	assert.True(t, far[0].InvoiceMonth.IsZero(), "a projection has no invoice")
+	assert.Empty(t, r.Between(day(t, "2026-12-31"), day(t, "2026-12-01"), txNow))
+
+	ending := r
+	ending.Rule.End = day(t, "2027-01-04")
+	assert.Empty(t, ending.Between(day(t, "2027-01-01"), day(t, "2027-01-31"), txNow), "ends before the 5th")
+	ending.Rule.End = day(t, "2027-01-05")
+	assert.Equal(t, []string{"2027-01-05"}, days(ending.Between(day(t, "2027-01-01"), day(t, "2027-01-31"), txNow)))
+
+	daily := r
+	daily.Rule, daily.Next = rule(t, FrequencyDaily, 1, "2026-08-05", ""), day(t, "2026-11-09")
+	assert.Len(t, daily.Between(day(t, "2026-12-01"), day(t, "2026-12-31"), txNow), 31)
+	assert.Len(t, daily.Between(day(t, "2026-11-01"), day(t, "2026-12-31"), txNow), 22+31, "from its next one, November 9")
+
+	ended := r
+	ended.Next = Date{}
+	assert.Empty(t, ended.Between(day(t, "2026-12-01"), day(t, "2026-12-31"), txNow))
 }

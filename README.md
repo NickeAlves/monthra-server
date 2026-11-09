@@ -32,6 +32,8 @@ Host ports bind to `127.0.0.1` only. The MongoDB users are created when the `mon
 
 To run the API on the host instead (Mongo, Redis and Mailpit still in Docker): `make run`.
 
+To get a user with data to look at, `make seed` (only with `APP_ENV=local`): it replaces `demo@monthra.local` (verified, pt-BR) with five accounts (checking, savings, a credit card, USD and cash), five recurrences started six months ago (salary, rent, a streaming on the card, a monthly saving, the card payment) and six months of everyday spending, a currency exchange, freelance income and a 10x purchase. Everything goes through the use cases, so their rules apply. Running it again deletes the demo user (the same erasers as `DELETE /me`) and creates it anew; the amounts come from a fixed random seed. The password is `SEED_PASSWORD` from `.env`, or a random one, printed at the end.
+
 ### Make targets
 
 | Target | What it does |
@@ -40,6 +42,7 @@ To run the API on the host instead (Mongo, Redis and Mailpit still in Docker): `
 | `make secrets` | Print random values for the secret variables of `.env` |
 | `make logs` / `make ps` | Follow logs / service status |
 | `make run` | Run the API on the host |
+| `make seed` | Replace the local demo user (`demo@monthra.local`) and its fake data |
 | `make test` | Unit tests with the race detector |
 | `make test-integration` | Unit + integration tests (testcontainers starts real MongoDB, Redis and Mailpit; needs Docker) |
 | `make cover` | All tests with a cross-package coverage report |
@@ -211,8 +214,19 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 - **Idempotent without transactions:** a pass stores the occurrences first (unordered, the unique index `{recurrence_id, occurrence_date}` skipping the ones already there) and then advances the recurrence's `next_date` with a compare-and-set, so an interrupted pass or two readers at once create each occurrence once. Ended recurrences have no `next_date`; the partial index `{user_id, next_date}` holds the active ones, so the read before each listing touches only what is due.
 - **Next ones:** `nextDate` and `lastDate` on each recurrence; `GET /api/v1/recurrences/upcoming?to=` projects the occurrences not created yet (30 days by default, up to 366, at most 1000), with the card invoices, stored nowhere.
 - **Editing the rule:** `PATCH /api/v1/recurrences/{id}` changes the next occurrences only, never the transactions already created. A new `startDate` must come after `lastDate`, so a series never covers its past again. `DELETE` stops the recurrence and keeps its transactions.
-- **Editing occurrences:** `PATCH /api/v1/transactions/{id}?scope=future|all` on an occurrence gives the later (or all) occurrences and the recurrence the changes made to the one addressed (amounts, category, description, tags, accounts); moving to another account is allowed and each occurrence picks its invoice again by its day. Day and invoice change with `scope=this` only. `DELETE ?scope=future` ends the rule before the occurrence and deletes the later ones; `?scope=all` deletes the recurrence and all its occurrences. The writes go others, then the recurrence, then the addressed one, so a resend completes an interrupted edit.
+- **Editing occurrences:** `PATCH /api/v1/transactions/{id}?scope=future|all` on an occurrence gives the later (or all) occurrences and the recurrence the changes made to the one addressed (amounts, category, description, tags, accounts); moving to another account is allowed and each occurrence picks its invoice again by its day. Day and invoice change with `scope=this` only. `DELETE ?scope=future` ends the rule before the occurrence and deletes the later ones (cut on or before `startDate`, the recurrence goes, unless earlier occurrences remain: then it stays ended, `endDate` before `startDate`); `?scope=all` deletes the recurrence and all its occurrences. The writes go others, then the recurrence, then the addressed one, so a resend completes an interrupted edit.
 - **Guards:** an account an active recurrence names cannot be archived, and one any recurrence names cannot be deleted (`409 used_by_recurrence`); a category one names needs `reassignTo` to be deleted, which moves the recurrences too. `DELETE /me` erases the recurrences before the transactions.
+
+## Dashboard
+
+`GET /api/v1/dashboard/summary?month=YYYY-MM&asOf=YYYY-MM-DD` sums one month (the month of the reader's today by default) by currency, with no conversion between them. It creates the occurrences of the recurrences due up to the reader's today first (`asOf`, held within a day of today in UTC).
+
+- **Flows of the month:** `income`, `expense` and `net` add up the whole month, days still to come included (a card installment later in the month counts, on its date). Transfers (a card payment, a saving, a currency exchange) are neither. `scheduled` is what the recurrences are still to create in the month (`domain.Recurrence.Between`). `expensesByCategory` and `incomeByCategory` hold `{categoryId, amount, count}`, the largest first.
+- **Balances:** `asOf` in the answer is the day they count up to: the month's last day, or the reader's today when that comes first. `balance` is the net worth that day (a card's debt counts against it, archived accounts count) and `accounts` holds each account's balance. As on `/accounts?asOf`, an initial balance has no day, so it counts in every month.
+- **History:** 12 points up to `month`, `{month, income, expense, netWorth}`; `netWorth` is null for the months after `asOf`.
+- **Ids only:** accounts and categories come as ids, joined with `/accounts` and `/categories` by the app. So the cache does not depend on the language, and renaming invalidates nothing.
+- **Two aggregations:** the flows of the 12 months through `{user_id, date}` (`Transactions.Flows`), and what every transaction up to the cut moved on each account by month (`Transactions.LegSums`, sharing the signed legs of the balances).
+- **Cache-aside (§5.4):** a summary lives in Redis for 5 minutes at `monthra:{env}:summary:{user_id}:{version}:v1:{YYYY-MM}:{cut}`. `monthra:{env}:summary:{user_id}:ver` holds a random version (24 h), which every write to the user's data replaces (`dashboard.Invalidator`). The accounts, categories (a deletion that moves transactions), transactions and recurrences use cases call it after every write attempt, and `Materialize` calls it when it creates occurrences, so one write drops every month at once. A lost version only makes the next reads miss. The cache fails open: a Redis error is logged and counted, and the summary is computed. Only months within 12 of the reader's are cached. `DELETE /me` drops the version, and what was cached under it expires within 5 minutes.
 
 ## Browser security
 
@@ -225,18 +239,18 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 ## Observability
 
 - Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and, on authenticated requests, `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
-- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, `monthra_transactions_created_total{kind}`, plus Go and process metrics.
+- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, `monthra_transactions_created_total{kind}`, `monthra_cache_requests_total{cache,result}` (hit, miss), `monthra_cache_errors_total{cache,op}`, plus Go and process metrics.
 - Traces: HTTP server spans named after the route, MongoDB command spans (operation and collection only, never query values) and Redis spans.
 
 ## Layout
 
 ```
-cmd/api/              entrypoint (and the `healthcheck` subcommand for the image)
-internal/app/         wiring, servers and graceful shutdown
+cmd/api/              entrypoint (and the `healthcheck` and `seed` subcommands)
+internal/app/         wiring, servers, graceful shutdown and the local seed
 internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
-internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/, recurrences/)
+internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/, recurrences/, dashboard/)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates
@@ -247,7 +261,7 @@ internal/ratelimit/   Redis GCRA rate limiter
 internal/i18n/        locale matching and translated messages
 internal/observability/  logger, metrics, tracing
 internal/repository/mongo/  MongoDB client, command tracing and repositories
-internal/cache/       Redis client, key naming (monthra:{env}:...), denylist, lockout, MFA challenges and the locale cache
+internal/cache/       Redis client, key naming (monthra:{env}:...), denylist, lockout, MFA challenges, the locale cache and the dashboard summaries
 migrations/           MongoDB indexes, applied at boot
 docs/                 OpenAPI document (embedded in the binary)
 deploy/mongo/         MongoDB init script (least-privilege app user)
