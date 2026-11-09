@@ -28,10 +28,12 @@ func TestSeed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, SeedEmail, res.Email)
 	assert.GreaterOrEqual(t, len(res.Password), 20, "a random password")
-	assert.Equal(t, 5, res.Accounts)
+	assert.Equal(t, 6, res.Accounts)
 	assert.Equal(t, 5, res.Recurrences)
 	assert.Greater(t, res.Transactions, 100)
 	assert.Equal(t, 4, res.Budgets)
+	assert.Equal(t, 3, res.Investments)
+	assert.Equal(t, 13, res.Movements)
 
 	asDemo := signIn(t, native, api, res.Email, res.Password)
 	first := call(t, native, http.MethodGet, api+"/api/v1/dashboard/summary", nil, asDemo)
@@ -40,6 +42,22 @@ func TestSeed(t *testing.T) {
 	assert.NotZero(t, brl["expense"])
 	assert.NotEmpty(t, brl["expensesByCategory"])
 	currencyOf(t, first, "USD")
+	// This month's dividend counts as income of the month.
+	incomes, _ := brl["incomeByCategory"].([]any)
+	assert.NotEmpty(t, incomes)
+	// The portfolio: positions valued today.
+	r0 := call(t, native, http.MethodGet, api+"/api/v1/investments", nil, asDemo)
+	require.Equal(t, http.StatusOK, r0.status, r0.body)
+	list, _ := r0.body["investments"].([]any)
+	require.Len(t, list, 3)
+	stock, _ := list[0].(map[string]any)
+	pos, _ := stock["position"].(map[string]any)
+	assert.Equal(t, "160", pos["quantity"])
+	assert.Equal(t, "38.42", pos["price"])
+	assert.Equal(t, float64(614720), pos["value"])
+	assert.Equal(t, float64(9700), pos["income"])
+	totals, _ := r0.body["totals"].([]any)
+	require.Len(t, totals, 1)
 	// The budgets of this month start in the state their limits were sized
 	// for (with nothing spent yet, a budget is ok).
 	r := call(t, native, http.MethodGet, api+"/api/v1/budgets", nil, asDemo)

@@ -35,6 +35,7 @@ var ErrSeedNotLocal = errors.New("seed runs only with APP_ENV=local")
 type SeedResult struct {
 	Email, Password                              string
 	Accounts, Recurrences, Transactions, Budgets int
+	Investments, Movements                       int
 }
 
 // Seed replaces the demo user (SeedEmail) with a new one, verified, and
@@ -127,6 +128,7 @@ func Seed(ctx context.Context, cfg config.Config, logger *slog.Logger, password 
 	return SeedResult{
 		Email: SeedEmail, Password: password,
 		Accounts: d.accounts, Recurrences: d.recurrences, Transactions: int(n), Budgets: d.budgets,
+		Investments: d.investments, Movements: d.movements,
 	}, nil
 }
 
@@ -144,7 +146,7 @@ type demo struct {
 	rnd    *mathrand.Rand
 	err    error
 
-	accounts, recurrences, budgets int
+	accounts, recurrences, budgets, investments, movements int
 }
 
 // amount is a random amount from min to max minor units, in whole units.
@@ -183,8 +185,8 @@ func (d *demo) tx(in domain.TransactionInput) {
 	}
 }
 
-// load writes five accounts, five recurrences, six months of spending and
-// four budgets.
+// load writes six accounts, five recurrences, six months of spending, a
+// portfolio of three investments and four budgets.
 func (d *demo) load() error {
 	limit := int64(800000)
 	checking := d.account(domain.AccountInput{Name: "Checking", Type: "checking", Currency: "BRL", InitialBalance: 350000})
@@ -195,6 +197,7 @@ func (d *demo) load() error {
 	})
 	dollars := d.account(domain.AccountInput{Name: "USD account", Type: "checking", Currency: "USD", InitialBalance: 120000})
 	cash := d.account(domain.AccountInput{Name: "Cash", Type: "cash", Currency: "BRL", InitialBalance: 20000})
+	broker := d.account(domain.AccountInput{Name: "Broker", Type: "brokerage", Currency: "BRL"})
 	if d.err != nil {
 		return d.err
 	}
@@ -258,6 +261,8 @@ func (d *demo) load() error {
 	d.tx(domain.TransactionInput{Kind: "expense", AccountID: card, CategoryID: cat["shopping"], Amount: 359900,
 		Date: d.today.AddMonths(-2).String(), Description: "Laptop", Installments: 10})
 
+	d.portfolio(first, checking, broker, cat["investment_income"])
+
 	// This month's budgets, last: created after the spending, each starts in
 	// its state with no alert to give, so the seed sends no email. Groceries
 	// has room left, dining is at the warning, transport past its limit,
@@ -267,6 +272,58 @@ func (d *demo) load() error {
 	d.budget(cat["transport"], "BRL", 120)
 	d.budget(cat["travel"], "USD", 0)
 	return d.err
+}
+
+// portfolio writes a stock (bought three times, sold once, quoted today, a
+// dividend last month and one this month, which the dashboard counts as
+// income), crypto in fractions, and a deposit tracked by value at the bank.
+func (d *demo) portfolio(first domain.Month, bank, broker, dividends string) {
+	day := func(months, day int) string { return first.AddMonths(months).Day(day).String() }
+	thisMonth := domain.MonthOf(d.today).Day(1).String()
+	stock := d.investment(domain.InvestmentInput{Name: "Monthra SA", Type: "stock", Currency: "BRL", Ticker: "MNTH3", AccountID: broker})
+	d.movement(stock, domain.MovementInput{Type: "buy", Date: day(0, 8), Quantity: "100", Amount: seedAmount(320000), Fees: seedAmount(990)})
+	d.movement(stock, domain.MovementInput{Type: "buy", Date: day(2, 9), Quantity: "50", Amount: seedAmount(175000), Fees: seedAmount(990)})
+	d.movement(stock, domain.MovementInput{Type: "sell", Date: day(4, 14), Quantity: "30", Amount: seedAmount(114000), Fees: seedAmount(990)})
+	d.movement(stock, domain.MovementInput{Type: "buy", Date: day(5, 8), Quantity: "40", Amount: seedAmount(148000), Fees: seedAmount(990)})
+	d.movement(stock, domain.MovementInput{Type: "income", Date: day(5, 20), Amount: seedAmount(4500), CategoryID: dividends})
+	d.movement(stock, domain.MovementInput{Type: "income", Date: thisMonth, Amount: seedAmount(5200), CategoryID: dividends})
+	d.movement(stock, domain.MovementInput{Type: "valuation", Date: d.today.String(), Price: "38.42"})
+
+	coin := d.investment(domain.InvestmentInput{Name: "Bitcoin", Type: "crypto", Currency: "BRL", Ticker: "BTC", AccountID: broker})
+	d.movement(coin, domain.MovementInput{Type: "buy", Date: day(1, 3), Quantity: "0.01234567", Amount: seedAmount(432098), Fees: seedAmount(1500)})
+	d.movement(coin, domain.MovementInput{Type: "buy", Date: day(4, 3), Quantity: "0.005", Amount: seedAmount(190000)})
+	d.movement(coin, domain.MovementInput{Type: "valuation", Date: d.today.String(), Price: "395000"})
+
+	deposit := d.investment(domain.InvestmentInput{Name: "CDB 110% CDI", Type: "fixed_income", Currency: "BRL", AccountID: bank})
+	d.movement(deposit, domain.MovementInput{Type: "buy", Date: day(0, 15), Amount: seedAmount(500000)})
+	d.movement(deposit, domain.MovementInput{Type: "buy", Date: day(3, 15), Amount: seedAmount(200000)})
+	d.movement(deposit, domain.MovementInput{Type: "valuation", Date: thisMonth, Amount: seedAmount(742300)})
+}
+
+func seedAmount(v int64) *int64 { return &v }
+
+func (d *demo) investment(in domain.InvestmentInput) string {
+	if d.err != nil {
+		return ""
+	}
+	ip, err := d.s.investments.Create(d.ctx, d.userID, in)
+	if err != nil {
+		d.err = fmt.Errorf("seed investment %q: %w", in.Name, err)
+		return ""
+	}
+	d.investments++
+	return ip.Investment.ID
+}
+
+func (d *demo) movement(investmentID string, in domain.MovementInput) {
+	if d.err != nil {
+		return
+	}
+	if _, err := d.s.investments.CreateMovement(d.ctx, d.userID, investmentID, in, d.today); err != nil {
+		d.err = fmt.Errorf("seed movement %s on %s: %w", in.Type, in.Date, err)
+		return
+	}
+	d.movements++
 }
 
 // budget creates this month's budget of category and sizes its limit so
