@@ -14,9 +14,10 @@ const (
 	// MinBudgetWarnAt and MaxBudgetWarnAt bound WarnAt.
 	MinBudgetWarnAt = 1
 	MaxBudgetWarnAt = 100
-	// BudgetRollWindow is how many months back the budgets of a month are
-	// carried from: someone back after a longer gap gets the budgets of
-	// the latest month within it (older months stay as they were).
+	// BudgetRollWindow bounds how many months one carry-over fills: someone
+	// back after a longer gap gets the budgets of the last month done in
+	// the latest BudgetRollWindow months (the months in between stay as
+	// they were).
 	BudgetRollWindow = 12
 )
 
