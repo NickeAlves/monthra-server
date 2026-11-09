@@ -17,7 +17,7 @@ type Service struct {
 	store       Store
 	ledger      Ledger
 	recurrences Recurrences
-	invalidate  Invalidator
+	afterWrite  WriteHook
 	now         func() time.Time
 	max         int
 }
@@ -30,13 +30,13 @@ type Options struct {
 	MaxAccounts int
 	// Recurrences defaults to no recurrences.
 	Recurrences Recurrences
-	// Invalidator is told of every write; it defaults to none.
-	Invalidator Invalidator
+	// AfterWrite is told of every write; it defaults to none.
+	AfterWrite WriteHook
 }
 
-type noInvalidator struct{}
+type noHook struct{}
 
-func (noInvalidator) Invalidate(context.Context, string) {}
+func (noHook) AfterWrite(context.Context, string) {}
 
 type noRecurrences struct{}
 
@@ -56,11 +56,11 @@ func NewService(store Store, ledger Ledger, o Options) *Service {
 	if o.Recurrences == nil {
 		o.Recurrences = noRecurrences{}
 	}
-	if o.Invalidator == nil {
-		o.Invalidator = noInvalidator{}
+	if o.AfterWrite == nil {
+		o.AfterWrite = noHook{}
 	}
 	return &Service{
-		store: store, ledger: ledger, recurrences: o.Recurrences, invalidate: o.Invalidator,
+		store: store, ledger: ledger, recurrences: o.Recurrences, afterWrite: o.AfterWrite,
 		now: o.Now, max: o.MaxAccounts,
 	}
 }
@@ -130,7 +130,7 @@ func (s *Service) Create(ctx context.Context, userID string, in domain.AccountIn
 		return domain.AccountWithBalance{}, domain.ErrLimitReached
 	}
 	// An initial balance counts in the net worth of every month.
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	created, err := s.store.Insert(ctx, a)
 	if err != nil {
 		return domain.AccountWithBalance{}, fmt.Errorf("create account: %w", err)
@@ -180,7 +180,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Accoun
 		return domain.AccountWithBalance{}, err
 	}
 	if changed {
-		defer s.invalidate.Invalidate(ctx, userID)
+		defer s.afterWrite.AfterWrite(ctx, userID)
 		if err := s.store.Update(ctx, next); err != nil {
 			return domain.AccountWithBalance{}, fmt.Errorf("update account: %w", err)
 		}
@@ -252,7 +252,7 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	if used {
 		return domain.ErrUsedByRecurrence
 	}
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}

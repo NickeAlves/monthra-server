@@ -25,6 +25,8 @@ var (
 	// category: it cannot be deleted (or an account archived, while the
 	// recurrence is active) until the recurrence ends or moves.
 	ErrUsedByRecurrence = errors.New("used by a recurrence")
+	// ErrBudgetExists means the category already has a budget in the month.
+	ErrBudgetExists = errors.New("budget exists")
 )
 
 // Field error codes, stable for clients to switch on.

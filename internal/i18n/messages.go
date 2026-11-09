@@ -38,6 +38,7 @@ const (
 	ErrAccountInUse     Key = "account_in_use"
 	ErrCategoryInUse    Key = "category_in_use"
 	ErrUsedByRecurrence Key = "used_by_recurrence"
+	ErrBudgetExists     Key = "budget_exists"
 )
 
 // Message is a translated title and detail.
@@ -193,6 +194,11 @@ var catalog = map[Key]map[Locale]Message{
 		PtBR: {"Usado por uma recorrência", "Uma recorrência usa este registro. Encerre a recorrência ou troque a conta ou a categoria dela antes."},
 		EsES: {"Usado por una recurrencia", "Una recurrencia usa este registro. Finaliza la recurrencia o cambia su cuenta o su categoría antes."},
 		EnUS: {"Used by a recurrence", "A recurrence uses this record. End the recurrence or change its account or category first."},
+	},
+	ErrBudgetExists: {
+		PtBR: {"Orçamento já existe", "Esta categoria já tem um orçamento neste mês. Altere o limite dele em vez de criar outro."},
+		EsES: {"El presupuesto ya existe", "Esta categoría ya tiene un presupuesto este mes. Cambia su límite en lugar de crear otro."},
+		EnUS: {"Budget already exists", "This category already has a budget this month. Change its limit instead of creating another."},
 	},
 }
 

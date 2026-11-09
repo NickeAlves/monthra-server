@@ -49,8 +49,15 @@ type Usage interface {
 	ReassignCategory(ctx context.Context, userID, from, to string, at time.Time) error
 }
 
-// Invalidator drops what is cached from a user's finance data (the
-// dashboard summaries) after a write to it. It never fails.
-type Invalidator interface {
-	Invalidate(ctx context.Context, userID string)
+// Budgets drops the budgets of a category being deleted, in every month:
+// they plan spending on it, and are no history of their own.
+type Budgets interface {
+	DeleteByCategory(ctx context.Context, userID, categoryID string) error
+}
+
+// WriteHook runs after every write attempt to a user's finance data (it
+// drops the cached dashboard summaries and checks the budget alerts). It
+// never fails.
+type WriteHook interface {
+	AfterWrite(ctx context.Context, userID string)
 }

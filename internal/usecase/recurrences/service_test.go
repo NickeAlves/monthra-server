@@ -227,10 +227,10 @@ type countingMetrics struct{ created []string }
 
 func (m *countingMetrics) TransactionCreated(kind string) { m.created = append(m.created, kind) }
 
-// countingInvalidator counts the invalidations of each user.
-type countingInvalidator map[string]int
+// countingHook counts the hook calls of each user.
+type countingHook map[string]int
 
-func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+func (c countingHook) AfterWrite(_ context.Context, userID string) { c[userID]++ }
 
 type fixture struct {
 	svc     *Service
@@ -239,7 +239,7 @@ type fixture struct {
 	refs    *refs
 	metrics *countingMetrics
 	logs    *bytes.Buffer
-	invalid countingInvalidator
+	invalid countingHook
 }
 
 func newFixture() fixture {
@@ -261,10 +261,10 @@ func newFixture() fixture {
 			"salary": {ID: "salary", UserID: "u1", Kind: domain.CategoryIncome},
 		},
 	}
-	store, ledger, metrics, logs, invalid := newMemStore(), &memLedger{}, &countingMetrics{}, &bytes.Buffer{}, countingInvalidator{}
+	store, ledger, metrics, logs, invalid := newMemStore(), &memLedger{}, &countingMetrics{}, &bytes.Buffer{}, countingHook{}
 	svc := NewService(store, ledger, r, categoryFinder{r}, Options{
 		Now: func() time.Time { return t0 }, Metrics: metrics, Logger: slog.New(slog.NewTextHandler(logs, nil)),
-		Invalidator: invalid,
+		AfterWrite: invalid,
 	})
 	return fixture{svc: svc, store: store, ledger: ledger, refs: r, metrics: metrics, logs: logs, invalid: invalid}
 }
@@ -661,7 +661,7 @@ func TestEndBeforeKeepsAMovedRecurrence(t *testing.T) {
 	assert.NotContains(t, f.store.recs, r.ID)
 }
 
-func TestWritesInvalidate(t *testing.T) {
+func TestWritesRunTheHook(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture()
 
@@ -673,8 +673,8 @@ func TestWritesInvalidate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, f.invalid["u1"], "nothing due: the insert only")
 
-	// Reads with nothing due, and patches that change nothing, invalidate
-	// nothing.
+	// Reads with nothing due, and patches that change nothing, never
+	// run the hook.
 	_, err = f.svc.List(ctx, "u1", domain.Date{})
 	require.NoError(t, err)
 	_, err = f.svc.Update(ctx, "u1", r.ID, domain.RecurrencePatch{Amount: ptr(r.Amount)}, domain.Date{})
@@ -689,7 +689,7 @@ func TestWritesInvalidate(t *testing.T) {
 	assert.Error(t, f.svc.Delete(ctx, "u1", future.ID))
 	assert.Equal(t, 6, f.invalid["u1"], "an attempt counts: a write may have happened")
 
-	// A pass that creates occurrences and then fails still invalidates.
+	// A pass that creates occurrences and then fails still runs the hook.
 	f.store.recs[r.ID] = func() domain.Recurrence {
 		x := f.store.recs[r.ID]
 		x.Next = day(t, "2026-11-01")

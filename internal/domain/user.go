@@ -72,6 +72,9 @@ type Preferences struct {
 	Locale   i18n.Locale
 	Theme    Theme
 	Currency string
+	// BudgetAlerts sends the budget alert emails (the status of each budget
+	// shows in the app either way).
+	BudgetAlerts bool
 }
 
 // DefaultPreferences returns the preferences of a new account. The locale
@@ -80,19 +83,20 @@ func DefaultPreferences(locale i18n.Locale) Preferences {
 	if _, ok := i18n.Parse(string(locale)); !ok {
 		locale = i18n.Default
 	}
-	return Preferences{Locale: locale, Theme: DefaultTheme, Currency: DefaultCurrency}
+	return Preferences{Locale: locale, Theme: DefaultTheme, Currency: DefaultCurrency, BudgetAlerts: true}
 }
 
 // PreferencesPatch changes some preferences; nil fields stay as they are.
 type PreferencesPatch struct {
-	Locale   *string
-	Theme    *string
-	Currency *string
+	Locale       *string
+	Theme        *string
+	Currency     *string
+	BudgetAlerts *bool
 }
 
 // Empty reports whether the patch changes nothing.
 func (p PreferencesPatch) Empty() bool {
-	return p.Locale == nil && p.Theme == nil && p.Currency == nil
+	return p.Locale == nil && p.Theme == nil && p.Currency == nil && p.BudgetAlerts == nil
 }
 
 // Apply checks every field of the patch against the supported values and
@@ -121,6 +125,9 @@ func (p PreferencesPatch) Apply(current Preferences) (Preferences, error) {
 		} else {
 			v.Add("currency", CodeInvalid)
 		}
+	}
+	if p.BudgetAlerts != nil {
+		next.BudgetAlerts = *p.BudgetAlerts
 	}
 	if err := v.Err(); err != nil {
 		return Preferences{}, err

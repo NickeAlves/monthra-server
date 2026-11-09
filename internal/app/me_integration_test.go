@@ -61,7 +61,7 @@ func TestAccountEndToEnd(t *testing.T) {
 	assert.Equal(t, addr, r.str("email"))
 	assert.Equal(t, true, r.body["emailVerified"])
 	assert.Equal(t, map[string]any{"enabled": false, "recoveryCodesRemaining": float64(0)}, r.body["mfa"])
-	assert.Equal(t, map[string]any{"locale": "pt-BR", "theme": "system", "currency": "BRL"}, r.body["preferences"])
+	assert.Equal(t, map[string]any{"locale": "pt-BR", "theme": "system", "currency": "BRL", "budgetAlerts": true}, r.body["preferences"])
 	userID := r.str("id")
 	require.Len(t, userID, 24)
 
@@ -74,7 +74,7 @@ func TestAccountEndToEnd(t *testing.T) {
 	// The stored locale wins over Accept-Language, on every device.
 	r = call(t, native, http.MethodPatch, api+"/api/v1/me/preferences", map[string]string{"locale": "en-US", "currency": "EUR"}, deviceA)
 	require.Equal(t, http.StatusOK, r.status)
-	assert.Equal(t, map[string]any{"locale": "en-US", "theme": "system", "currency": "EUR"}, r.body)
+	assert.Equal(t, map[string]any{"locale": "en-US", "theme": "system", "currency": "EUR", "budgetAlerts": true}, r.body)
 	withPtBR := map[string]string{"Authorization": deviceB["Authorization"], "Accept-Language": "pt-BR"}
 	r = call(t, native, http.MethodPatch, api+"/api/v1/me/preferences", map[string]string{"theme": "sepia"}, withPtBR)
 	require.Equal(t, http.StatusUnprocessableEntity, r.status)

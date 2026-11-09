@@ -20,7 +20,8 @@ type Service struct {
 	marker      SeedMarker
 	usage       Usage
 	recurrences Usage
-	invalidate  Invalidator
+	budgets     Budgets
+	afterWrite  WriteHook
 	now         func() time.Time
 	max         int
 }
@@ -34,14 +35,20 @@ type Options struct {
 	// Recurrences are the other records that name categories; nil names
 	// none.
 	Recurrences Usage
-	// Invalidator is told when a deletion moves transactions to another
+	// Budgets are dropped with their category; nil holds none.
+	Budgets Budgets
+	// AfterWrite is told when a deletion moves transactions to another
 	// category; it defaults to none.
-	Invalidator Invalidator
+	AfterWrite WriteHook
 }
 
-type noInvalidator struct{}
+type noHook struct{}
 
-func (noInvalidator) Invalidate(context.Context, string) {}
+func (noHook) AfterWrite(context.Context, string) {}
+
+type noBudgets struct{}
+
+func (noBudgets) DeleteByCategory(context.Context, string, string) error { return nil }
 
 type noUsage struct{}
 
@@ -61,11 +68,14 @@ func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service
 	if o.Recurrences == nil {
 		o.Recurrences = noUsage{}
 	}
-	if o.Invalidator == nil {
-		o.Invalidator = noInvalidator{}
+	if o.Budgets == nil {
+		o.Budgets = noBudgets{}
+	}
+	if o.AfterWrite == nil {
+		o.AfterWrite = noHook{}
 	}
 	return &Service{
-		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, invalidate: o.Invalidator,
+		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, budgets: o.Budgets, afterWrite: o.AfterWrite,
 		now: o.Now, max: o.MaxCategories,
 	}
 }
@@ -175,6 +185,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Catego
 // *domain.ValidationError on reassignTo). The move runs again after the
 // deletion, so a record created in between is not left naming a category
 // that is gone.
+// Its budgets go with it, in every month, either way.
 func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) error {
 	c, err := s.Get(ctx, userID, id)
 	if err != nil {
@@ -201,7 +212,7 @@ func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) err
 	}
 	// Moving transactions changes the dashboard's categories; a category
 	// deleted unused, or created or renamed, changes no number there.
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	now := s.clock()
 	if err := s.reassign(ctx, userID, id, reassignTo, now); err != nil {
 		return err
@@ -247,7 +258,13 @@ func (s *Service) checkTarget(ctx context.Context, c domain.Category, to string)
 	return nil
 }
 
+// delete removes category id with its budgets, those first: a deletion
+// interrupted in between leaves the category, and running it again
+// completes it.
 func (s *Service) delete(ctx context.Context, userID, id string) error {
+	if err := s.budgets.DeleteByCategory(ctx, userID, id); err != nil {
+		return fmt.Errorf("delete budgets of category: %w", err)
+	}
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete category: %w", err)
 	}

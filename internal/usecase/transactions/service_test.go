@@ -238,7 +238,7 @@ type fixture struct {
 	refs    *refs
 	metrics *countingMetrics
 	series  *fakeSeries
-	invalid countingInvalidator
+	invalid countingHook
 }
 
 func newFixture() fixture {
@@ -259,17 +259,17 @@ func newFixture() fixture {
 			"salary": {ID: "salary", UserID: "u1", Kind: domain.CategoryIncome},
 		},
 	}
-	store, metrics, series, invalid := newMemStore(), &countingMetrics{}, &fakeSeries{}, countingInvalidator{}
+	store, metrics, series, invalid := newMemStore(), &countingMetrics{}, &fakeSeries{}, countingHook{}
 	svc := NewService(store, r, categoryFinder{r}, Options{
-		Now: func() time.Time { return t0 }, Metrics: metrics, Series: series, Invalidator: invalid,
+		Now: func() time.Time { return t0 }, Metrics: metrics, Series: series, AfterWrite: invalid,
 	})
 	return fixture{svc: svc, store: store, refs: r, metrics: metrics, series: series, invalid: invalid}
 }
 
-// countingInvalidator counts the invalidations of each user.
-type countingInvalidator map[string]int
+// countingHook counts the hook calls of each user.
+type countingHook map[string]int
 
-func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+func (c countingHook) AfterWrite(_ context.Context, userID string) { c[userID]++ }
 
 func expense() domain.TransactionInput {
 	return domain.TransactionInput{Kind: "expense", AccountID: "bank", CategoryID: "food", Amount: 4590, Date: "2026-11-08"}
@@ -537,7 +537,7 @@ func TestDefaults(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-func TestWritesInvalidate(t *testing.T) {
+func TestWritesRunTheHook(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture()
 	bad := expense()
@@ -570,7 +570,7 @@ func TestWritesInvalidate(t *testing.T) {
 	require.NoError(t, f.svc.Delete(ctx, "u1", tx.ID, domain.ScopeThis))
 	assert.Equal(t, 6, f.invalid["u1"])
 
-	// A failed write still invalidates: part of it may be stored.
+	// A failed write still runs the hook: part of it may be stored.
 	f.store.insertErr = errors.New("mongo down")
 	_, err = f.svc.Create(ctx, "u1", expense())
 	require.Error(t, err)

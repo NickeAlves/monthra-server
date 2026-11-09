@@ -22,7 +22,7 @@ func TestCatalogIsComplete(t *testing.T) {
 	all := []Template{
 		TemplateVerifyEmail, TemplateRegisterAttempt, TemplateResetPassword,
 		TemplatePasswordChanged, TemplateMFAEnabled, TemplateMFADisabled,
-		TemplateAccountDeleted,
+		TemplateAccountDeleted, TemplateBudgetWarning, TemplateBudgetExceeded,
 	}
 	noAction := map[Template]bool{TemplateAccountDeleted: true}
 	for _, tpl := range all {
@@ -48,12 +48,12 @@ func TestRenderEveryTemplateAndLocale(t *testing.T) {
 	link := "https://app.monthra.example/verify-email#token=abc_DEF-123"
 	for tpl := range catalog {
 		for _, l := range i18n.Supported {
-			e, err := r.Render(Message{To: "ana@example.com", Locale: l, Template: tpl, Link: link, LinkTTL: 30 * time.Minute})
+			e, err := r.Render(Message{To: "ana@example.com", Locale: l, Template: tpl, Link: link, LinkTTL: 30 * time.Minute, Month: "2026-11"})
 			require.NoError(t, err)
 			c := catalog[tpl][l]
 			assert.Equal(t, tpl, e.Template)
 			assert.Equal(t, "ana@example.com", e.To)
-			assert.Equal(t, c.Subject, e.Subject)
+			assert.Equal(t, strings.ReplaceAll(c.Subject, "{month}", monthNameOf(t, "2026-11", l)), e.Subject)
 			assert.Contains(t, e.HTML, `lang="`+string(l)+`"`)
 			if c.Action == "" {
 				assert.NotContains(t, e.HTML, "href=", "no button without an action")
@@ -62,7 +62,8 @@ func TestRenderEveryTemplateAndLocale(t *testing.T) {
 				assert.Contains(t, e.HTML, `href="`+link+`"`)
 				assert.Contains(t, e.Text, c.Action+": "+link)
 			}
-			assert.NotContains(t, e.Text+e.HTML, "{minutes}")
+			assert.NotContains(t, e.Subject+e.Text+e.HTML, "{minutes}")
+			assert.NotContains(t, e.Subject+e.Text+e.HTML, "{month}")
 		}
 	}
 }

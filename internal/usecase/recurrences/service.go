@@ -35,7 +35,7 @@ type Service struct {
 	accounts   Accounts
 	categories Categories
 	metrics    Metrics
-	invalidate Invalidator
+	afterWrite WriteHook
 	logger     *slog.Logger
 	now        func() time.Time
 	max        int
@@ -51,18 +51,18 @@ type Options struct {
 	Metrics Metrics
 	// MaxRecurrences defaults to DefaultMaxRecurrences.
 	MaxRecurrences int
-	// Invalidator is told of every write (occurrences created included);
+	// AfterWrite is told of every write (occurrences created included);
 	// it defaults to none.
-	Invalidator Invalidator
+	AfterWrite WriteHook
 }
 
 type noMetrics struct{}
 
 func (noMetrics) TransactionCreated(string) {}
 
-type noInvalidator struct{}
+type noHook struct{}
 
-func (noInvalidator) Invalidate(context.Context, string) {}
+func (noHook) AfterWrite(context.Context, string) {}
 
 // NewService returns the service.
 func NewService(store Store, ledger Ledger, accounts Accounts, categories Categories, o Options) *Service {
@@ -78,12 +78,12 @@ func NewService(store Store, ledger Ledger, accounts Accounts, categories Catego
 	if o.MaxRecurrences <= 0 {
 		o.MaxRecurrences = DefaultMaxRecurrences
 	}
-	if o.Invalidator == nil {
-		o.Invalidator = noInvalidator{}
+	if o.AfterWrite == nil {
+		o.AfterWrite = noHook{}
 	}
 	return &Service{
 		store: store, ledger: ledger, accounts: accounts, categories: categories,
-		metrics: o.Metrics, invalidate: o.Invalidator, logger: o.Logger, now: o.Now, max: o.MaxRecurrences,
+		metrics: o.Metrics, afterWrite: o.AfterWrite, logger: o.Logger, now: o.Now, max: o.MaxRecurrences,
 	}
 }
 
@@ -101,11 +101,11 @@ func (s *Service) horizon(asOf domain.Date) domain.Date { return domain.Today(as
 // the next read. It runs before every read of the transactions, so it
 // never fails one: a failure is logged and the read goes on with what was
 // stored. Creating any occurrence (even in a pass that fails later)
-// invalidates what is cached of the caller's data.
+// runs the write hook (the cached summaries, the budget alerts).
 func (s *Service) Materialize(ctx context.Context, userID string, asOf domain.Date) {
 	created, err := s.materialize(ctx, userID, s.horizon(asOf))
 	if created > 0 {
-		s.invalidate.Invalidate(ctx, userID)
+		s.afterWrite.AfterWrite(ctx, userID)
 	}
 	if err != nil {
 		s.logger.WarnContext(ctx, "materialize recurrences failed", "error", err)
@@ -225,7 +225,7 @@ func (s *Service) Create(ctx context.Context, userID string, in domain.Recurrenc
 		return domain.Recurrence{}, domain.ErrLimitReached
 	}
 	// What is still to come changes the dashboard of the months ahead.
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	created, err := s.store.Insert(ctx, r)
 	if err != nil {
 		return domain.Recurrence{}, fmt.Errorf("create recurrence: %w", err)
@@ -290,7 +290,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Recurr
 	if !changed {
 		return current, nil
 	}
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	if err := s.store.Update(ctx, next); err != nil {
 		return domain.Recurrence{}, fmt.Errorf("update recurrence: %w", err)
 	}
@@ -313,7 +313,7 @@ func (s *Service) ref(ctx context.Context, userID string, patch *string, current
 // Delete removes one of the caller's recurrences, or answers
 // domain.ErrNotFound. Its transactions stay, still linked to it.
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	if err := s.store.Delete(ctx, userID, id); err != nil {
 		return fmt.Errorf("delete recurrence: %w", err)
 	}

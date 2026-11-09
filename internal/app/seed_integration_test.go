@@ -31,6 +31,7 @@ func TestSeed(t *testing.T) {
 	assert.Equal(t, 5, res.Accounts)
 	assert.Equal(t, 5, res.Recurrences)
 	assert.Greater(t, res.Transactions, 100)
+	assert.Equal(t, 4, res.Budgets)
 
 	asDemo := signIn(t, native, api, res.Email, res.Password)
 	first := call(t, native, http.MethodGet, api+"/api/v1/dashboard/summary", nil, asDemo)
@@ -39,7 +40,24 @@ func TestSeed(t *testing.T) {
 	assert.NotZero(t, brl["expense"])
 	assert.NotEmpty(t, brl["expensesByCategory"])
 	currencyOf(t, first, "USD")
-	r := call(t, native, http.MethodGet, api+"/api/v1/me", nil, asDemo)
+	// The budgets of this month start in the state their limits were sized
+	// for (with nothing spent yet, a budget is ok).
+	r := call(t, native, http.MethodGet, api+"/api/v1/budgets", nil, asDemo)
+	budgets, _ := r.body["budgets"].([]any)
+	require.Len(t, budgets, 4, r.body)
+	statuses := map[string]int{}
+	for _, raw := range budgets {
+		b, _ := raw.(map[string]any)
+		status, _ := b["status"].(string)
+		if spent, _ := b["spent"].(float64); spent == 0 {
+			assert.Equal(t, "ok", status, b)
+		}
+		statuses[status]++
+	}
+	assert.Equal(t, 4, statuses["ok"]+statuses["warning"]+statuses["exceeded"])
+	assert.LessOrEqual(t, statuses["exceeded"], 1)
+	assert.LessOrEqual(t, statuses["warning"], 1)
+	r = call(t, native, http.MethodGet, api+"/api/v1/me", nil, asDemo)
 	require.Equal(t, http.StatusOK, r.status)
 	firstID := r.str("id")
 
@@ -48,6 +66,7 @@ func TestSeed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "local demo password", again.Password)
 	assert.Equal(t, res.Transactions, again.Transactions)
+	assert.Equal(t, 4, again.Budgets)
 	r = call(t, native, http.MethodGet, api+"/api/v1/me", nil, asDemo)
 	assert.Equal(t, http.StatusUnauthorized, r.status, "the old demo user is gone")
 	asDemo = signIn(t, native, api, SeedEmail, "local demo password")

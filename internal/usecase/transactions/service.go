@@ -41,7 +41,7 @@ type Service struct {
 	categories Categories
 	metrics    Metrics
 	series     Series
-	invalidate Invalidator
+	afterWrite WriteHook
 	now        func() time.Time
 }
 
@@ -53,13 +53,13 @@ type Options struct {
 	Metrics Metrics
 	// Series defaults to no recurrences.
 	Series Series
-	// Invalidator is told of every write; it defaults to none.
-	Invalidator Invalidator
+	// AfterWrite is told of every write; it defaults to none.
+	AfterWrite WriteHook
 }
 
-type noInvalidator struct{}
+type noHook struct{}
 
-func (noInvalidator) Invalidate(context.Context, string) {}
+func (noHook) AfterWrite(context.Context, string) {}
 
 type noMetrics struct{}
 
@@ -83,12 +83,12 @@ func NewService(store Store, accounts Accounts, categories Categories, o Options
 	if o.Series == nil {
 		o.Series = noSeries{}
 	}
-	if o.Invalidator == nil {
-		o.Invalidator = noInvalidator{}
+	if o.AfterWrite == nil {
+		o.AfterWrite = noHook{}
 	}
 	return &Service{
 		store: store, accounts: accounts, categories: categories, metrics: o.Metrics, series: o.Series,
-		invalidate: o.Invalidator, now: o.Now,
+		afterWrite: o.AfterWrite, now: o.Now,
 	}
 }
 
@@ -145,7 +145,7 @@ func (s *Service) Create(ctx context.Context, userID string, in domain.Transacti
 		return domain.Transaction{}, err
 	}
 	// After the attempt, even a failed one: a partial write may be stored.
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	var created []domain.Transaction
 	if len(ts) == 1 {
 		var t domain.Transaction
@@ -221,7 +221,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 		return domain.Transaction{}, err
 	}
 	if len(edit.Others) > 0 || edit.Changed {
-		defer s.invalidate.Invalidate(ctx, userID)
+		defer s.afterWrite.AfterWrite(ctx, userID)
 	}
 	// The others first, then the recurrence, and this one last: until this
 	// one is stored, sending the same patch again finds the same changes on
@@ -253,7 +253,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, p domain.Transa
 // first, so no read creates occurrences again meanwhile. It answers
 // domain.ErrNotFound for a transaction the caller does not hold.
 func (s *Service) Delete(ctx context.Context, userID, id string, scope domain.EditScope) error {
-	defer s.invalidate.Invalidate(ctx, userID)
+	defer s.afterWrite.AfterWrite(ctx, userID)
 	if scope != domain.ScopeThis {
 		current, err := s.Get(ctx, userID, id)
 		if err != nil {

@@ -20,10 +20,13 @@ type Users struct{ coll *mongo.Collection }
 // NewUsers returns the users repository on db.
 func NewUsers(db *mongo.Database) *Users { return &Users{coll: db.Collection(CollUsers)} }
 
+// preferencesDoc holds the preferences. budget_alerts is a pointer because
+// accounts created before it have none, which reads as on.
 type preferencesDoc struct {
-	Locale   string `bson:"locale"`
-	Theme    string `bson:"theme"`
-	Currency string `bson:"currency"`
+	Locale       string `bson:"locale"`
+	Theme        string `bson:"theme"`
+	Currency     string `bson:"currency"`
+	BudgetAlerts *bool  `bson:"budget_alerts,omitempty"`
 }
 
 // mfaDoc is the mfa subdocument. It is absent until a setup starts and
@@ -66,9 +69,10 @@ func (d userDoc) toDomain() domain.User {
 		PasswordHash:    d.PasswordHash,
 		EmailVerifiedAt: d.EmailVerifiedAt,
 		Preferences: domain.Preferences{
-			Locale:   i18n.Locale(d.Preferences.Locale),
-			Theme:    domain.Theme(d.Preferences.Theme),
-			Currency: d.Preferences.Currency,
+			Locale:       i18n.Locale(d.Preferences.Locale),
+			Theme:        domain.Theme(d.Preferences.Theme),
+			Currency:     d.Preferences.Currency,
+			BudgetAlerts: d.Preferences.BudgetAlerts == nil || *d.Preferences.BudgetAlerts,
 		},
 		CreatedAt: d.CreatedAt,
 		UpdatedAt: d.UpdatedAt,
@@ -84,9 +88,10 @@ func (r *Users) Create(ctx context.Context, u domain.User) (domain.User, error) 
 		PasswordHash:    u.PasswordHash,
 		EmailVerifiedAt: u.EmailVerifiedAt,
 		Preferences: preferencesDoc{
-			Locale:   string(u.Preferences.Locale),
-			Theme:    string(u.Preferences.Theme),
-			Currency: u.Preferences.Currency,
+			Locale:       string(u.Preferences.Locale),
+			Theme:        string(u.Preferences.Theme),
+			Currency:     u.Preferences.Currency,
+			BudgetAlerts: &u.Preferences.BudgetAlerts,
 		},
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
@@ -152,6 +157,7 @@ func (r *Users) UpdatePreferences(ctx context.Context, id string, p domain.Prefe
 		{Key: "preferences.locale", Value: string(p.Locale)},
 		{Key: "preferences.theme", Value: string(p.Theme)},
 		{Key: "preferences.currency", Value: p.Currency},
+		{Key: "preferences.budget_alerts", Value: p.BudgetAlerts},
 		{Key: "updated_at", Value: at.UTC()},
 	})
 }
@@ -192,6 +198,49 @@ func (r *Users) MarkCategoriesSeeded(ctx context.Context, id string, at time.Tim
 	)
 	if err != nil {
 		return fmt.Errorf("mark categories seeded: %w", err)
+	}
+	return nil
+}
+
+// BudgetsRolledThrough returns the latest month the budgets of account id
+// were carried over to (budgets_rolled_through), or the zero Month when
+// they never were. An account that does not exist answers domain.MaxMonth,
+// as if every month were done, so nothing is ever written for an account
+// being erased.
+func (r *Users) BudgetsRolledThrough(ctx context.Context, id string) (domain.Month, error) {
+	oid, err := objectID(id)
+	if err != nil {
+		return domain.MaxMonth, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	var doc struct {
+		RolledThrough string `bson:"budgets_rolled_through"`
+	}
+	opts := options.FindOne().SetProjection(bson.D{{Key: "budgets_rolled_through", Value: 1}})
+	err = r.coll.FindOne(ctx, bson.D{{Key: "_id", Value: oid}}, opts).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return domain.MaxMonth, nil
+	}
+	if err != nil {
+		return domain.Month{}, fmt.Errorf("find user: %w", err)
+	}
+	return storedMonth(doc.RolledThrough), nil
+}
+
+// MarkBudgetsRolled records that the budgets of account id were carried
+// over through month m. The mark only moves forward ($max: "YYYY-MM" sorts
+// as the months do), so concurrent rollovers agree, and marking an account
+// that is gone does nothing.
+func (r *Users) MarkBudgetsRolled(ctx context.Context, id string, m domain.Month) error {
+	oid, err := objectID(id)
+	if err != nil {
+		return nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	_, err = r.coll.UpdateOne(ctx,
+		bson.D{{Key: "_id", Value: oid}},
+		bson.D{{Key: "$max", Value: bson.D{{Key: "budgets_rolled_through", Value: m.String()}}}},
+	)
+	if err != nil {
+		return fmt.Errorf("mark budgets rolled: %w", err)
 	}
 	return nil
 }

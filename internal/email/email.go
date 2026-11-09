@@ -32,6 +32,13 @@ const (
 	// TemplateAccountDeleted confirms that the account and its data were
 	// deleted. It has no call to action: there is no account left to act on.
 	TemplateAccountDeleted Template = "account_deleted"
+	// TemplateBudgetWarning tells the owner that spending in a month reached
+	// the warning share of at least one budget. Like every template, it names
+	// no category: a category name is user-chosen text.
+	TemplateBudgetWarning Template = "budget_warning"
+	// TemplateBudgetExceeded tells the owner that spending in a month went
+	// past the limit of at least one budget.
+	TemplateBudgetExceeded Template = "budget_exceeded"
 )
 
 // Message is an email to render and send. It never carries user-chosen text:
@@ -45,6 +52,9 @@ type Message struct {
 	Link string
 	// LinkTTL is how long Link works, when it expires.
 	LinkTTL time.Duration
+	// Month is the month ("YYYY-MM") a template speaks of, written out in
+	// the locale ("novembro de 2026").
+	Month string
 }
 
 // Email is a rendered message, ready to send.

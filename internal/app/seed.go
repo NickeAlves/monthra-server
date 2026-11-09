@@ -17,6 +17,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/cache"
 	"github.com/NickeAlves/monthra-server/internal/config"
 	"github.com/NickeAlves/monthra-server/internal/domain"
+	"github.com/NickeAlves/monthra-server/internal/email"
 	"github.com/NickeAlves/monthra-server/internal/i18n"
 	"github.com/NickeAlves/monthra-server/internal/observability"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
@@ -32,8 +33,8 @@ var ErrSeedNotLocal = errors.New("seed runs only with APP_ENV=local")
 
 // SeedResult is what make seed created.
 type SeedResult struct {
-	Email, Password                     string
-	Accounts, Recurrences, Transactions int
+	Email, Password                              string
+	Accounts, Recurrences, Transactions, Budgets int
 }
 
 // Seed replaces the demo user (SeedEmail) with a new one, verified, and
@@ -72,7 +73,12 @@ func Seed(ctx context.Context, cfg config.Config, logger *slog.Logger, password 
 	}
 	defer func() { _ = redisClient.Close() }()
 	keys := cache.NewKeys(cfg.AppEnv)
-	f := newFeatures(db, redisClient, keys, logger, observability.NewMetrics("seed", string(cfg.AppEnv)))
+	// The demo data sends no email: its budgets come last, already past
+	// what they alert on.
+	f := newFeatures(featureDeps{
+		db: db, redis: redisClient, keys: keys, logger: logger,
+		metrics: observability.NewMetrics("seed", string(cfg.AppEnv)), mailer: noMailer{}, appURL: cfg.Auth.AppPublicURL,
+	})
 
 	users := repomongo.NewUsers(db)
 	old, err := users.ByEmail(ctx, SeedEmail)
@@ -120,7 +126,7 @@ func Seed(ctx context.Context, cfg config.Config, logger *slog.Logger, password 
 	}
 	return SeedResult{
 		Email: SeedEmail, Password: password,
-		Accounts: d.accounts, Recurrences: d.recurrences, Transactions: int(n),
+		Accounts: d.accounts, Recurrences: d.recurrences, Transactions: int(n), Budgets: d.budgets,
 	}, nil
 }
 
@@ -138,7 +144,7 @@ type demo struct {
 	rnd    *mathrand.Rand
 	err    error
 
-	accounts, recurrences int
+	accounts, recurrences, budgets int
 }
 
 // amount is a random amount from min to max minor units, in whole units.
@@ -177,7 +183,8 @@ func (d *demo) tx(in domain.TransactionInput) {
 	}
 }
 
-// load writes five accounts, five recurrences and six months of spending.
+// load writes five accounts, five recurrences, six months of spending and
+// four budgets.
 func (d *demo) load() error {
 	limit := int64(800000)
 	checking := d.account(domain.AccountInput{Name: "Checking", Type: "checking", Currency: "BRL", InitialBalance: 350000})
@@ -250,5 +257,42 @@ func (d *demo) load() error {
 		Date: first.AddMonths(3).Day(7).String(), Description: "Pharmacy"})
 	d.tx(domain.TransactionInput{Kind: "expense", AccountID: card, CategoryID: cat["shopping"], Amount: 359900,
 		Date: d.today.AddMonths(-2).String(), Description: "Laptop", Installments: 10})
+
+	// This month's budgets, last: created after the spending, each starts in
+	// its state with no alert to give, so the seed sends no email. Groceries
+	// has room left, dining is at the warning, transport past its limit,
+	// travel in USD has nothing spent.
+	d.budget(cat["groceries"], "BRL", 50)
+	d.budget(cat["dining"], "BRL", 90)
+	d.budget(cat["transport"], "BRL", 120)
+	d.budget(cat["travel"], "USD", 0)
 	return d.err
 }
+
+// budget creates this month's budget of category and sizes its limit so
+// that what the category spent this month is share percent of it (500.00
+// when share is zero or nothing was spent).
+func (d *demo) budget(category, currency string, share int64) {
+	if d.err != nil {
+		return
+	}
+	u, err := d.s.budgets.Create(d.ctx, d.userID, domain.BudgetInput{CategoryID: category, Currency: currency, Limit: domain.MaxAmount}, d.today)
+	if err != nil {
+		d.err = fmt.Errorf("seed budget: %w", err)
+		return
+	}
+	limit := int64(50000)
+	if share > 0 && u.Spent > 0 {
+		limit = u.Spent * 100 / share
+	}
+	if _, err := d.s.budgets.Update(d.ctx, d.userID, u.Budget.ID, domain.BudgetPatch{Limit: &limit}, d.today); err != nil {
+		d.err = fmt.Errorf("seed budget limit: %w", err)
+		return
+	}
+	d.budgets++
+}
+
+// noMailer drops every email.
+type noMailer struct{}
+
+func (noMailer) Send(context.Context, email.Message) {}

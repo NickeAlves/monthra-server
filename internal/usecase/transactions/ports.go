@@ -74,8 +74,9 @@ type Metrics interface {
 	TransactionCreated(kind string)
 }
 
-// Invalidator drops what is cached from a user's finance data (the
-// dashboard summaries) after a write to it. It never fails.
-type Invalidator interface {
-	Invalidate(ctx context.Context, userID string)
+// WriteHook runs after every write attempt to a user's finance data (it
+// drops the cached dashboard summaries and checks the budget alerts). It
+// never fails.
+type WriteHook interface {
+	AfterWrite(ctx context.Context, userID string)
 }

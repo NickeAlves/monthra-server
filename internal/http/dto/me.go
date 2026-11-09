@@ -29,6 +29,8 @@ type Preferences struct {
 	Locale   string `json:"locale"`
 	Theme    string `json:"theme"`
 	Currency string `json:"currency"`
+	// BudgetAlerts sends the budget alert emails.
+	BudgetAlerts bool `json:"budgetAlerts"`
 }
 
 // NewMeResponse maps an account to its public view: no hash, secret or code.
@@ -45,7 +47,7 @@ func NewMeResponse(u domain.User) MeResponse {
 
 // NewPreferences maps preferences to their JSON form.
 func NewPreferences(p domain.Preferences) Preferences {
-	return Preferences{Locale: string(p.Locale), Theme: string(p.Theme), Currency: p.Currency}
+	return Preferences{Locale: string(p.Locale), Theme: string(p.Theme), Currency: p.Currency, BudgetAlerts: p.BudgetAlerts}
 }
 
 // UpdateMeRequest is the body of PATCH /me. Only these fields can change.
@@ -56,14 +58,15 @@ type UpdateMeRequest struct {
 // UpdatePreferencesRequest is the body of PATCH /me/preferences. Absent (or
 // null) fields stay as they are.
 type UpdatePreferencesRequest struct {
-	Locale   *string `json:"locale" validate:"omitempty,max=16"`
-	Theme    *string `json:"theme" validate:"omitempty,max=16"`
-	Currency *string `json:"currency" validate:"omitempty,max=8"`
+	Locale       *string `json:"locale" validate:"omitempty,max=16"`
+	Theme        *string `json:"theme" validate:"omitempty,max=16"`
+	Currency     *string `json:"currency" validate:"omitempty,max=8"`
+	BudgetAlerts *bool   `json:"budgetAlerts"`
 }
 
 // Patch returns the domain patch of the request.
 func (r UpdatePreferencesRequest) Patch() domain.PreferencesPatch {
-	return domain.PreferencesPatch{Locale: r.Locale, Theme: r.Theme, Currency: r.Currency}
+	return domain.PreferencesPatch{Locale: r.Locale, Theme: r.Theme, Currency: r.Currency, BudgetAlerts: r.BudgetAlerts}
 }
 
 // ChangePasswordRequest is the body of POST /me/password.

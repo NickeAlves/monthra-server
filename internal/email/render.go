@@ -57,12 +57,22 @@ func (r *Renderer) Render(m Message) (Email, error) {
 		locale = i18n.Default
 		c = byLocale[locale]
 	}
-	minutes := strconv.Itoa(int(m.LinkTTL.Minutes()))
+	month, err := monthName(m.Month, locale)
+	if err != nil {
+		return Email{}, err
+	}
+	if month == "" && strings.Contains(c.Subject, "{month}") {
+		return Email{}, fmt.Errorf("email template %q needs a month", m.Template)
+	}
+	fill := strings.NewReplacer("{minutes}", strconv.Itoa(int(m.LinkTTL.Minutes())), "{month}", month).Replace
 	lines := make([]string, len(c.Lines))
 	for i, l := range c.Lines {
-		lines[i] = strings.ReplaceAll(l, "{minutes}", minutes)
+		lines[i] = fill(l)
 	}
-	v := view{Lang: string(locale), Subject: c.Subject, Heading: c.Heading, Lines: lines, Action: c.Action, Link: m.Link, Footer: c.Footer}
+	v := view{
+		Lang: string(locale), Subject: fill(c.Subject), Heading: fill(c.Heading), Lines: lines,
+		Action: c.Action, Link: m.Link, Footer: fill(c.Footer),
+	}
 
 	var html, text bytes.Buffer
 	if err := r.html.Execute(&html, v); err != nil {
@@ -71,5 +81,5 @@ func (r *Renderer) Render(m Message) (Email, error) {
 	if err := r.text.Execute(&text, v); err != nil {
 		return Email{}, fmt.Errorf("render %s text: %w", m.Template, err)
 	}
-	return Email{Template: m.Template, To: m.To, Subject: c.Subject, Text: text.String(), HTML: html.String()}, nil
+	return Email{Template: m.Template, To: m.To, Subject: v.Subject, Text: text.String(), HTML: html.String()}, nil
 }

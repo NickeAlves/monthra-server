@@ -36,7 +36,7 @@ func (h *Dashboard) Summary(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	q, err := dto.ParseSummaryQuery(r.URL.Query())
+	q, err := dto.ParseMonthQuery(r.URL.Query())
 	if err != nil {
 		writeError(w, r, h.Logger, err)
 		return
