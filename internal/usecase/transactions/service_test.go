@@ -238,6 +238,7 @@ type fixture struct {
 	refs    *refs
 	metrics *countingMetrics
 	series  *fakeSeries
+	invalid countingInvalidator
 }
 
 func newFixture() fixture {
@@ -258,10 +259,17 @@ func newFixture() fixture {
 			"salary": {ID: "salary", UserID: "u1", Kind: domain.CategoryIncome},
 		},
 	}
-	store, metrics, series := newMemStore(), &countingMetrics{}, &fakeSeries{}
-	svc := NewService(store, r, categoryFinder{r}, Options{Now: func() time.Time { return t0 }, Metrics: metrics, Series: series})
-	return fixture{svc: svc, store: store, refs: r, metrics: metrics, series: series}
+	store, metrics, series, invalid := newMemStore(), &countingMetrics{}, &fakeSeries{}, countingInvalidator{}
+	svc := NewService(store, r, categoryFinder{r}, Options{
+		Now: func() time.Time { return t0 }, Metrics: metrics, Series: series, Invalidator: invalid,
+	})
+	return fixture{svc: svc, store: store, refs: r, metrics: metrics, series: series, invalid: invalid}
 }
+
+// countingInvalidator counts the invalidations of each user.
+type countingInvalidator map[string]int
+
+func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
 
 func expense() domain.TransactionInput {
 	return domain.TransactionInput{Kind: "expense", AccountID: "bank", CategoryID: "food", Amount: 4590, Date: "2026-11-08"}
@@ -528,3 +536,44 @@ func TestDefaults(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestWritesInvalidate(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture()
+	bad := expense()
+	bad.Amount = 0
+	_, err := f.svc.Create(ctx, "u1", bad)
+	require.Error(t, err)
+	assert.Zero(t, f.invalid["u1"], "nothing written")
+
+	tx, err := f.svc.Create(ctx, "u1", expense())
+	require.NoError(t, err)
+	assert.Equal(t, 1, f.invalid["u1"])
+	purchase := expense()
+	purchase.Installments = 3
+	first, err := f.svc.Create(ctx, "u1", purchase)
+	require.NoError(t, err)
+	assert.Equal(t, 2, f.invalid["u1"])
+
+	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{Amount: ptr(tx.Amount)}, domain.ScopeThis)
+	require.NoError(t, err)
+	assert.Equal(t, 2, f.invalid["u1"], "a patch that changes nothing writes nothing")
+	_, err = f.svc.Update(ctx, "u1", tx.ID, domain.TransactionPatch{Amount: ptr(int64(1))}, domain.ScopeThis)
+	require.NoError(t, err)
+	assert.Equal(t, 3, f.invalid["u1"])
+	_, err = f.svc.Update(ctx, "u1", first.ID, domain.TransactionPatch{Amount: ptr(int64(100))}, domain.ScopeAll)
+	require.NoError(t, err)
+	assert.Equal(t, 4, f.invalid["u1"], "once for the whole purchase")
+
+	require.NoError(t, f.svc.Delete(ctx, "u1", first.ID, domain.ScopeFuture))
+	assert.Equal(t, 5, f.invalid["u1"])
+	require.NoError(t, f.svc.Delete(ctx, "u1", tx.ID, domain.ScopeThis))
+	assert.Equal(t, 6, f.invalid["u1"])
+
+	// A failed write still invalidates: part of it may be stored.
+	f.store.insertErr = errors.New("mongo down")
+	_, err = f.svc.Create(ctx, "u1", expense())
+	require.Error(t, err)
+	assert.Equal(t, 7, f.invalid["u1"])
+	assert.Zero(t, f.invalid["u2"])
+}

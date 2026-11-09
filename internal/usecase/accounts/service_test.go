@@ -490,3 +490,32 @@ func TestAccountsOfRecurrences(t *testing.T) {
 	assert.ErrorIs(t, err, recurrences.err)
 	assert.ErrorIs(t, svc.Delete(ctx, "u1", "a1"), recurrences.err)
 }
+
+// countingInvalidator counts the invalidations of each user.
+type countingInvalidator map[string]int
+
+func (c countingInvalidator) Invalidate(_ context.Context, userID string) { c[userID]++ }
+
+func TestWritesInvalidate(t *testing.T) {
+	ctx := context.Background()
+	invalid := countingInvalidator{}
+	store := newMemStore()
+	svc := NewService(store, &fakeLedger{}, Options{Now: func() time.Time { return t0 }, Invalidator: invalid})
+
+	a, err := svc.Create(ctx, "u1", checking("Bank"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, invalid["u1"])
+	_, err = svc.Update(ctx, "u1", a.ID, domain.AccountPatch{Name: ptr("Bank")}, domain.Date{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, invalid["u1"], "nothing changed")
+	_, err = svc.Update(ctx, "u1", a.ID, domain.AccountPatch{InitialBalance: ptr(int64(500))}, domain.Date{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, invalid["u1"])
+	require.NoError(t, svc.Delete(ctx, "u1", a.ID))
+	assert.Equal(t, 3, invalid["u1"])
+
+	bad := checking("")
+	_, err = svc.Create(ctx, "u1", bad)
+	require.Error(t, err)
+	assert.Equal(t, 3, invalid["u1"], "nothing written")
+}

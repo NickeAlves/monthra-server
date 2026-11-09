@@ -33,6 +33,9 @@ type Metrics struct {
 	emailDropped   *prometheus.CounterVec
 
 	transactionsCreated *prometheus.CounterVec
+
+	cacheRequests *prometheus.CounterVec
+	cacheErrors   *prometheus.CounterVec
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -106,6 +109,16 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "transactions_created_total",
 			Help:      "Transactions created, by kind (expense, income, transfer).",
 		}, []string{"kind"}),
+		cacheRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "cache_requests_total",
+			Help:      "Cache lookups, by cache and result (hit, miss).",
+		}, []string{"cache", "result"}),
+		cacheErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "cache_errors_total",
+			Help:      "Cache operations that failed (the request went on without the cache), by cache and operation (version, get, set, invalidate).",
+		}, []string{"cache", "op"}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "monthra",
@@ -121,7 +134,7 @@ func NewMetrics(version, env string) *Metrics {
 		m.requests, m.duration, m.inFlight, buildInfo,
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
 		m.authLogins, m.refreshReuse, m.passwordResets, m.mfaEvents, m.emailSent, m.emailDropped,
-		m.transactionsCreated,
+		m.transactionsCreated, m.cacheRequests, m.cacheErrors,
 	)
 	return m
 }
@@ -175,6 +188,14 @@ func (m *Metrics) EmailDropped(template string) { m.emailDropped.WithLabelValues
 
 // TransactionCreated counts one transaction created, by kind.
 func (m *Metrics) TransactionCreated(kind string) { m.transactionsCreated.WithLabelValues(kind).Inc() }
+
+// CacheRequest counts one cache lookup, by result (hit, miss).
+func (m *Metrics) CacheRequest(cache, result string) {
+	m.cacheRequests.WithLabelValues(cache, result).Inc()
+}
+
+// CacheError counts one failed cache operation.
+func (m *Metrics) CacheError(cache, op string) { m.cacheErrors.WithLabelValues(cache, op).Inc() }
 
 // Handler serves the registry in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {

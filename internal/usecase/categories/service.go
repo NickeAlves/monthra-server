@@ -20,6 +20,7 @@ type Service struct {
 	marker      SeedMarker
 	usage       Usage
 	recurrences Usage
+	invalidate  Invalidator
 	now         func() time.Time
 	max         int
 }
@@ -33,7 +34,14 @@ type Options struct {
 	// Recurrences are the other records that name categories; nil names
 	// none.
 	Recurrences Usage
+	// Invalidator is told when a deletion moves transactions to another
+	// category; it defaults to none.
+	Invalidator Invalidator
 }
+
+type noInvalidator struct{}
+
+func (noInvalidator) Invalidate(context.Context, string) {}
 
 type noUsage struct{}
 
@@ -53,7 +61,13 @@ func NewService(store Store, marker SeedMarker, usage Usage, o Options) *Service
 	if o.Recurrences == nil {
 		o.Recurrences = noUsage{}
 	}
-	return &Service{store: store, marker: marker, usage: usage, recurrences: o.Recurrences, now: o.Now, max: o.MaxCategories}
+	if o.Invalidator == nil {
+		o.Invalidator = noInvalidator{}
+	}
+	return &Service{
+		store: store, marker: marker, usage: usage, recurrences: o.Recurrences, invalidate: o.Invalidator,
+		now: o.Now, max: o.MaxCategories,
+	}
 }
 
 // clock is the current time at the precision MongoDB keeps (milliseconds),
@@ -185,6 +199,9 @@ func (s *Service) Delete(ctx context.Context, userID, id, reassignTo string) err
 	if err := s.checkTarget(ctx, c, reassignTo); err != nil {
 		return err
 	}
+	// Moving transactions changes the dashboard's categories; a category
+	// deleted unused, or created or renamed, changes no number there.
+	defer s.invalidate.Invalidate(ctx, userID)
 	now := s.clock()
 	if err := s.reassign(ctx, userID, id, reassignTo, now); err != nil {
 		return err

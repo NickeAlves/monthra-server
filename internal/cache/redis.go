@@ -70,7 +70,13 @@ func (k Keys) Key(parts ...string) string {
 	return k.prefix + ":" + strings.Join(parts, ":")
 }
 
-// MonthlySummary is the cache-aside key of a user's monthly dashboard summary (§5.4).
-func (k Keys) MonthlySummary(userID, month string) string {
-	return k.Key("summary", userID, month)
+// SummaryVersion is the key of the version of a user's cached dashboard
+// summaries: monthra:{env}:summary:{user_id}:ver.
+func (k Keys) SummaryVersion(userID string) string { return k.Key("summary", userID, "ver") }
+
+// Summary is the cache-aside key of one dashboard summary of a user (§5.4)
+// under a version of them: monthra:{env}:summary:{user_id}:{version}:{slot},
+// slot naming the summary (its month, among others).
+func (k Keys) Summary(userID, version, slot string) string {
+	return k.Key("summary", userID, version, slot)
 }
