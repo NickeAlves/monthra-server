@@ -19,7 +19,7 @@ type Service struct {
 	now         func() time.Time
 }
 
-// Options tunes the Service and the Alerts.
+// Options tunes the Service.
 type Options struct {
 	// Now defaults to time.Now.
 	Now func() time.Time

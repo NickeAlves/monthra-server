@@ -17,6 +17,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/cache"
 	"github.com/NickeAlves/monthra-server/internal/config"
 	"github.com/NickeAlves/monthra-server/internal/domain"
+	"github.com/NickeAlves/monthra-server/internal/email"
 	"github.com/NickeAlves/monthra-server/internal/i18n"
 	"github.com/NickeAlves/monthra-server/internal/observability"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
@@ -72,7 +73,12 @@ func Seed(ctx context.Context, cfg config.Config, logger *slog.Logger, password 
 	}
 	defer func() { _ = redisClient.Close() }()
 	keys := cache.NewKeys(cfg.AppEnv)
-	f := newFeatures(db, redisClient, keys, logger, observability.NewMetrics("seed", string(cfg.AppEnv)))
+	// The demo data sends no email: its budgets come last, already past
+	// what they alert on.
+	f := newFeatures(featureDeps{
+		db: db, redis: redisClient, keys: keys, logger: logger,
+		metrics: observability.NewMetrics("seed", string(cfg.AppEnv)), mailer: noMailer{}, appURL: cfg.Auth.AppPublicURL,
+	})
 
 	users := repomongo.NewUsers(db)
 	old, err := users.ByEmail(ctx, SeedEmail)
@@ -252,3 +258,8 @@ func (d *demo) load() error {
 		Date: d.today.AddMonths(-2).String(), Description: "Laptop", Installments: 10})
 	return d.err
 }
+
+// noMailer drops every email.
+type noMailer struct{}
+
+func (noMailer) Send(context.Context, email.Message) {}

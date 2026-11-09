@@ -175,7 +175,7 @@ func TestUpdatePreferences(t *testing.T) {
 
 	got, err = s.UpdatePreferences(ctx, "u1", domain.PreferencesPatch{Locale: ptr("en-US"), Currency: ptr("USD")})
 	require.NoError(t, err)
-	assert.Equal(t, domain.Preferences{Locale: i18n.EnUS, Theme: domain.ThemeDark, Currency: domain.CurrencyUSD}, got)
+	assert.Equal(t, domain.Preferences{Locale: i18n.EnUS, Theme: domain.ThemeDark, Currency: domain.CurrencyUSD, BudgetAlerts: true}, got)
 	assert.Equal(t, got, users.users["u1"].Preferences)
 	assert.Equal(t, i18n.EnUS, locales.values["u1"], "a new locale is written through")
 

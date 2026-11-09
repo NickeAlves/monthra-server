@@ -38,7 +38,8 @@ var now = time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 
 func TestUsers(t *testing.T) {
 	ctx := context.Background()
-	users := repo.NewUsers(testDB(t))
+	db := testDB(t)
+	users := repo.NewUsers(db)
 
 	u, err := users.Create(ctx, domain.NewUser("Ana", "ana@example.com", "hash-1", i18n.EsES, now))
 	require.NoError(t, err)
@@ -50,7 +51,23 @@ func TestUsers(t *testing.T) {
 	byEmail, err := users.ByEmail(ctx, "ana@example.com")
 	require.NoError(t, err)
 	assert.Equal(t, u, byEmail)
-	assert.Equal(t, domain.Preferences{Locale: i18n.EsES, Theme: domain.ThemeSystem, Currency: "BRL"}, byEmail.Preferences)
+	assert.Equal(t, domain.Preferences{Locale: i18n.EsES, Theme: domain.ThemeSystem, Currency: "BRL", BudgetAlerts: true}, byEmail.Preferences)
+
+	// budget_alerts is stored, both ways; an account written before it has
+	// none, which reads as on.
+	muted := byEmail.Preferences
+	muted.BudgetAlerts = false
+	require.NoError(t, users.UpdatePreferences(ctx, u.ID, muted, now))
+	stored, err := users.ByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.False(t, stored.Preferences.BudgetAlerts)
+	oid, err := bson.ObjectIDFromHex(u.ID)
+	require.NoError(t, err)
+	_, err = db.Collection(repo.CollUsers).UpdateOne(ctx, bson.D{{Key: "_id", Value: oid}}, bson.D{{Key: "$unset", Value: bson.D{{Key: "preferences.budget_alerts", Value: ""}}}})
+	require.NoError(t, err)
+	stored, err = users.ByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.True(t, stored.Preferences.BudgetAlerts)
 	assert.False(t, byEmail.EmailVerified())
 
 	_, err = users.ByEmail(ctx, "nobody@example.com")

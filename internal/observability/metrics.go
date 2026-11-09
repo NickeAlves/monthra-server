@@ -36,6 +36,9 @@ type Metrics struct {
 
 	cacheRequests *prometheus.CounterVec
 	cacheErrors   *prometheus.CounterVec
+
+	budgetAlerts      *prometheus.CounterVec
+	budgetAlertErrors prometheus.Counter
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -119,6 +122,16 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "cache_errors_total",
 			Help:      "Cache operations that failed (the request went on without the cache), by cache and operation (version, get, set, invalidate).",
 		}, []string{"cache", "op"}),
+		budgetAlerts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "budget_alerts_total",
+			Help:      "Budget alerts given, by level (warning, exceeded) and result (sent, muted by the owner's preference).",
+		}, []string{"level", "result"}),
+		budgetAlertErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "budget_alert_errors_total",
+			Help:      "Budget alert checks that failed after a write (the write went on; the alert waits for the next check).",
+		}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "monthra",
@@ -134,7 +147,7 @@ func NewMetrics(version, env string) *Metrics {
 		m.requests, m.duration, m.inFlight, buildInfo,
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
 		m.authLogins, m.refreshReuse, m.passwordResets, m.mfaEvents, m.emailSent, m.emailDropped,
-		m.transactionsCreated, m.cacheRequests, m.cacheErrors,
+		m.transactionsCreated, m.cacheRequests, m.cacheErrors, m.budgetAlerts, m.budgetAlertErrors,
 	)
 	return m
 }
@@ -196,6 +209,14 @@ func (m *Metrics) CacheRequest(cache, result string) {
 
 // CacheError counts one failed cache operation.
 func (m *Metrics) CacheError(cache, op string) { m.cacheErrors.WithLabelValues(cache, op).Inc() }
+
+// BudgetAlert counts one budget alert given, by level and result.
+func (m *Metrics) BudgetAlert(level, result string) {
+	m.budgetAlerts.WithLabelValues(level, result).Inc()
+}
+
+// BudgetAlertError counts one failed budget alert check.
+func (m *Metrics) BudgetAlertError() { m.budgetAlertErrors.Inc() }
 
 // Handler serves the registry in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {

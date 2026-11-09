@@ -8,11 +8,13 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/NickeAlves/monthra-server/internal/cache"
+	"github.com/NickeAlves/monthra-server/internal/config"
 	"github.com/NickeAlves/monthra-server/internal/http/handler"
 	"github.com/NickeAlves/monthra-server/internal/observability"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
 	"github.com/NickeAlves/monthra-server/internal/usecase/accounts"
 	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
+	"github.com/NickeAlves/monthra-server/internal/usecase/budgets"
 	"github.com/NickeAlves/monthra-server/internal/usecase/categories"
 	"github.com/NickeAlves/monthra-server/internal/usecase/dashboard"
 	"github.com/NickeAlves/monthra-server/internal/usecase/recurrences"
@@ -38,19 +40,38 @@ type featureServices struct {
 	recurrences  *recurrences.Service
 }
 
-// newFeatures wires every domain feature on db, the dashboard summaries
-// cached in rdb. Each one that stores data by user_id registers its eraser
-// (the UserDataEraser contract of CLAUDE.md).
-func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger *slog.Logger, metrics *observability.Metrics) features {
-	// Every write to a user's finance data drops their cached summaries, so
-	// the hooks come before the use cases that write.
-	summaries := cache.NewSummaries(rdb, keys, 0)
-	invalidator := dashboard.NewInvalidator(summaries, dashboard.Options{Logger: logger, Metrics: metrics})
-	hooks := writeHooks{invalidator.Invalidate}
+// featureDeps is what the domain features are built on.
+type featureDeps struct {
+	db      *mongo.Database
+	redis   *redis.Client
+	keys    cache.Keys
+	logger  *slog.Logger
+	metrics *observability.Metrics
+	// mailer sends the budget alerts, with links to appURL.
+	mailer budgets.Mailer
+	appURL config.PublicURL
+}
+
+// newFeatures wires every domain feature on d.db, the dashboard summaries
+// cached in d.redis. Each one that stores data by user_id registers its
+// eraser (the UserDataEraser contract of CLAUDE.md).
+func newFeatures(d featureDeps) features {
+	db, logger, metrics := d.db, d.logger, d.metrics
 	accountsStore, categoriesStore := repomongo.NewAccounts(db), repomongo.NewCategories(db)
+	users := repomongo.NewUsers(db)
 	// The transactions hold the balances of the accounts and tell whether
 	// an account or a category is still in use.
 	ledger := repomongo.NewTransactions(db)
+	// Every write to a user's finance data drops their cached summaries and
+	// checks their budget alerts, so the hooks come before the use cases
+	// that write. users.budgets_rolled_through marks the months whose
+	// budgets were carried over.
+	summaries := cache.NewSummaries(d.redis, d.keys, 0)
+	invalidator := dashboard.NewInvalidator(summaries, dashboard.Options{Logger: logger, Metrics: metrics})
+	budgetsStore := repomongo.NewBudgets(db)
+	alerts := budgets.NewAlerts(budgetsStore, users, ledger, users, d.mailer,
+		budgets.AlertsOptions{Logger: logger, Metrics: metrics, AppURL: d.appURL})
+	hooks := writeHooks{invalidator.Invalidate, alerts.Check}
 	// The recurrences create their occurrences before every read of the
 	// transactions (balances and invoices included), and name accounts and
 	// categories too.
@@ -60,7 +81,7 @@ func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger 
 	accountsService := accounts.NewService(accountsStore, ledger,
 		accounts.Options{Recurrences: recurrencesService, AfterWrite: hooks})
 	// users.categories_seeded_at marks who already got the default set.
-	categoriesService := categories.NewService(categoriesStore, repomongo.NewUsers(db), ledger,
+	categoriesService := categories.NewService(categoriesStore, users, ledger,
 		categories.Options{Recurrences: recurrencesStore, AfterWrite: hooks})
 	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore,
 		transactions.Options{Metrics: metrics, Series: recurrencesService, AfterWrite: hooks})
@@ -81,6 +102,8 @@ func newFeatures(db *mongo.Database, rdb *redis.Client, keys cache.Keys, logger 
 		erasers: []authuc.UserDataEraser{
 			repomongo.NewUserEraser(db, repomongo.CollRecurrences),
 			repomongo.NewUserEraser(db, repomongo.CollTransactions),
+			// Budgets before the categories they name.
+			repomongo.NewUserEraser(db, repomongo.CollBudgets),
 			repomongo.NewUserEraser(db, repomongo.CollAccounts),
 			repomongo.NewUserEraser(db, repomongo.CollCategories),
 			// The summaries cached under the dropped version are never read

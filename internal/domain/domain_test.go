@@ -107,7 +107,7 @@ func TestNewUserAndPreferences(t *testing.T) {
 	assert.False(t, u.EmailVerified())
 	assert.Equal(t, time.UTC, u.CreatedAt.Location())
 	assert.Equal(t, u.CreatedAt, u.UpdatedAt)
-	assert.Equal(t, Preferences{Locale: i18n.EsES, Theme: ThemeSystem, Currency: "BRL"}, u.Preferences)
+	assert.Equal(t, Preferences{Locale: i18n.EsES, Theme: ThemeSystem, Currency: "BRL", BudgetAlerts: true}, u.Preferences)
 
 	assert.Equal(t, i18n.Default, DefaultPreferences("fr-FR").Locale)
 
@@ -192,11 +192,18 @@ func TestPreferencesPatch(t *testing.T) {
 	assert.False(t, patch.Empty())
 	next, err := patch.Apply(current)
 	require.NoError(t, err)
-	assert.Equal(t, Preferences{Locale: i18n.EnUS, Theme: ThemeDark, Currency: CurrencyBRL}, next)
+	assert.Equal(t, Preferences{Locale: i18n.EnUS, Theme: ThemeDark, Currency: CurrencyBRL, BudgetAlerts: true}, next)
 
 	next, err = PreferencesPatch{Currency: ptr("EUR")}.Apply(next)
 	require.NoError(t, err)
-	assert.Equal(t, Preferences{Locale: i18n.EnUS, Theme: ThemeDark, Currency: CurrencyEUR}, next)
+	assert.Equal(t, Preferences{Locale: i18n.EnUS, Theme: ThemeDark, Currency: CurrencyEUR, BudgetAlerts: true}, next)
+
+	muted := PreferencesPatch{BudgetAlerts: ptr(false)}
+	assert.False(t, muted.Empty())
+	next, err = muted.Apply(next)
+	require.NoError(t, err)
+	assert.False(t, next.BudgetAlerts)
+	assert.Equal(t, CurrencyEUR, next.Currency, "the other fields stay")
 
 	_, err = PreferencesPatch{Locale: ptr("fr-FR"), Theme: ptr("sepia"), Currency: ptr("GBP")}.Apply(current)
 	var ve *ValidationError

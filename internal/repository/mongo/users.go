@@ -20,10 +20,13 @@ type Users struct{ coll *mongo.Collection }
 // NewUsers returns the users repository on db.
 func NewUsers(db *mongo.Database) *Users { return &Users{coll: db.Collection(CollUsers)} }
 
+// preferencesDoc holds the preferences. budget_alerts is a pointer because
+// accounts created before it have none, which reads as on.
 type preferencesDoc struct {
-	Locale   string `bson:"locale"`
-	Theme    string `bson:"theme"`
-	Currency string `bson:"currency"`
+	Locale       string `bson:"locale"`
+	Theme        string `bson:"theme"`
+	Currency     string `bson:"currency"`
+	BudgetAlerts *bool  `bson:"budget_alerts,omitempty"`
 }
 
 // mfaDoc is the mfa subdocument. It is absent until a setup starts and
@@ -66,9 +69,10 @@ func (d userDoc) toDomain() domain.User {
 		PasswordHash:    d.PasswordHash,
 		EmailVerifiedAt: d.EmailVerifiedAt,
 		Preferences: domain.Preferences{
-			Locale:   i18n.Locale(d.Preferences.Locale),
-			Theme:    domain.Theme(d.Preferences.Theme),
-			Currency: d.Preferences.Currency,
+			Locale:       i18n.Locale(d.Preferences.Locale),
+			Theme:        domain.Theme(d.Preferences.Theme),
+			Currency:     d.Preferences.Currency,
+			BudgetAlerts: d.Preferences.BudgetAlerts == nil || *d.Preferences.BudgetAlerts,
 		},
 		CreatedAt: d.CreatedAt,
 		UpdatedAt: d.UpdatedAt,
@@ -84,9 +88,10 @@ func (r *Users) Create(ctx context.Context, u domain.User) (domain.User, error) 
 		PasswordHash:    u.PasswordHash,
 		EmailVerifiedAt: u.EmailVerifiedAt,
 		Preferences: preferencesDoc{
-			Locale:   string(u.Preferences.Locale),
-			Theme:    string(u.Preferences.Theme),
-			Currency: u.Preferences.Currency,
+			Locale:       string(u.Preferences.Locale),
+			Theme:        string(u.Preferences.Theme),
+			Currency:     u.Preferences.Currency,
+			BudgetAlerts: &u.Preferences.BudgetAlerts,
 		},
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
@@ -152,6 +157,7 @@ func (r *Users) UpdatePreferences(ctx context.Context, id string, p domain.Prefe
 		{Key: "preferences.locale", Value: string(p.Locale)},
 		{Key: "preferences.theme", Value: string(p.Theme)},
 		{Key: "preferences.currency", Value: p.Currency},
+		{Key: "preferences.budget_alerts", Value: p.BudgetAlerts},
 		{Key: "updated_at", Value: at.UTC()},
 	})
 }

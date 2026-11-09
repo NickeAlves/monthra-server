@@ -92,7 +92,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	}()
 
 	db := mongoClient.Database(cfg.Mongo.Database)
-	domainFeatures := newFeatures(db, redisClient, keys, logger, metrics)
+	domainFeatures := newFeatures(featureDeps{
+		db: db, redis: redisClient, keys: keys, logger: logger, metrics: metrics,
+		mailer: mailer, appURL: cfg.Auth.AppPublicURL,
+	})
 	authn, err := newAuth(cfg, logger, metrics, authDeps{
 		db: db, redis: redisClient, keys: keys,
 		limiter: limiter, mailer: mailer, cookies: cookies,

@@ -101,7 +101,7 @@ func TestGetMe(t *testing.T) {
 	assert.Equal(t, "ana@example.com", body["email"])
 	assert.Equal(t, true, body["emailVerified"])
 	assert.Equal(t, map[string]any{"enabled": false, "recoveryCodesRemaining": float64(0)}, body["mfa"])
-	assert.Equal(t, map[string]any{"locale": "es-ES", "theme": "system", "currency": "BRL"}, body["preferences"])
+	assert.Equal(t, map[string]any{"locale": "es-ES", "theme": "system", "currency": "BRL", "budgetAlerts": true}, body["preferences"])
 	assert.Equal(t, "2026-11-08T12:00:00Z", body["createdAt"])
 
 	svc.user.MFA = domain.MFA{Secret: "e1:sealed", EnabledAt: &t0, RecoveryCodes: []string{"h1", "h2", "h3"}}
@@ -160,7 +160,7 @@ func TestPreferencesRoutes(t *testing.T) {
 	w := serve(h.GetPreferences, request(http.MethodGet, "/api/v1/me/preferences", "", asUser))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
-	assert.Equal(t, map[string]any{"locale": "es-ES", "theme": "system", "currency": "BRL"}, jsonOf(t, w))
+	assert.Equal(t, map[string]any{"locale": "es-ES", "theme": "system", "currency": "BRL", "budgetAlerts": true}, jsonOf(t, w))
 
 	w = serve(h.UpdatePreferences, request(http.MethodPatch, "/api/v1/me/preferences", `{"theme":"dark","locale":null}`, asUser))
 	require.Equal(t, http.StatusOK, w.Code)
@@ -168,6 +168,14 @@ func TestPreferencesRoutes(t *testing.T) {
 	assert.Equal(t, "dark", *svc.patch.Theme)
 	assert.Nil(t, svc.patch.Locale, "null leaves the field as it is")
 	assert.Nil(t, svc.patch.Currency)
+	assert.Nil(t, svc.patch.BudgetAlerts)
+
+	w = serve(h.UpdatePreferences, request(http.MethodPatch, "/api/v1/me/preferences", `{"budgetAlerts":false}`, asUser))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, svc.patch.BudgetAlerts)
+	assert.False(t, *svc.patch.BudgetAlerts)
+	w = serve(h.UpdatePreferences, request(http.MethodPatch, "/api/v1/me/preferences", `{"budgetAlerts":"no"}`, asUser))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "a boolean")
 
 	w = serve(h.UpdatePreferences, request(http.MethodPatch, "/api/v1/me/preferences", `{"timezone":"UTC"}`, asUser))
 	assert.Equal(t, http.StatusBadRequest, w.Code, "only the known fields")

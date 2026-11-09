@@ -2,8 +2,10 @@ package email
 
 import "github.com/NickeAlves/monthra-server/internal/i18n"
 
-// copyText is the translated text of one template. "{minutes}" in a line is
-// replaced by the link lifetime. A template without Action has no button.
+// copyText is the translated text of one template. In the subject, heading,
+// lines and footer, "{minutes}" is replaced by the link lifetime and
+// "{month}" by the month of the message, written out. A template without
+// Action has no button.
 type copyText struct {
 	Subject string
 	Heading string
@@ -239,4 +241,76 @@ var catalog = map[Template]map[i18n.Locale]copyText{
 			Footer: "If it was not you, someone knew your password: change it on any other service where you use the same one.",
 		},
 	},
+	TemplateBudgetWarning: {
+		i18n.PtBR: {
+			Subject: "Um orçamento de {month} está perto do limite",
+			Heading: "Um orçamento está perto do limite",
+			Lines: []string{
+				"Seus gastos de {month} chegaram ao aviso de pelo menos um dos seus orçamentos.",
+				"Abra o Monthra para ver quanto ainda resta em cada categoria.",
+			},
+			Action: "Ver orçamentos",
+			Footer: budgetFooter[i18n.PtBR],
+		},
+		i18n.EsES: {
+			Subject: "Un presupuesto de {month} está cerca del límite",
+			Heading: "Un presupuesto está cerca del límite",
+			Lines: []string{
+				"Tus gastos de {month} llegaron al aviso de al menos uno de tus presupuestos.",
+				"Abre Monthra para ver cuánto queda en cada categoría.",
+			},
+			Action: "Ver presupuestos",
+			Footer: budgetFooter[i18n.EsES],
+		},
+		i18n.EnUS: {
+			Subject: "A {month} budget is close to its limit",
+			Heading: "A budget is close to its limit",
+			Lines: []string{
+				"Your spending in {month} reached the warning of at least one of your budgets.",
+				"Open Monthra to see what is left in each category.",
+			},
+			Action: "View budgets",
+			Footer: budgetFooter[i18n.EnUS],
+		},
+	},
+	TemplateBudgetExceeded: {
+		i18n.PtBR: {
+			Subject: "Um orçamento de {month} passou do limite",
+			Heading: "Um orçamento passou do limite",
+			Lines: []string{
+				"Seus gastos de {month} passaram do limite de pelo menos um dos seus orçamentos.",
+				"Abra o Monthra para ver quais categorias passaram do limite, e quanto.",
+			},
+			Action: "Ver orçamentos",
+			Footer: budgetFooter[i18n.PtBR],
+		},
+		i18n.EsES: {
+			Subject: "Un presupuesto de {month} superó el límite",
+			Heading: "Un presupuesto superó el límite",
+			Lines: []string{
+				"Tus gastos de {month} superaron el límite de al menos uno de tus presupuestos.",
+				"Abre Monthra para ver qué categorías superaron el límite, y por cuánto.",
+			},
+			Action: "Ver presupuestos",
+			Footer: budgetFooter[i18n.EsES],
+		},
+		i18n.EnUS: {
+			Subject: "A {month} budget went over its limit",
+			Heading: "A budget went over its limit",
+			Lines: []string{
+				"Your spending in {month} went over the limit of at least one of your budgets.",
+				"Open Monthra to see which categories went over, and by how much.",
+			},
+			Action: "View budgets",
+			Footer: budgetFooter[i18n.EnUS],
+		},
+	},
+}
+
+// budgetFooter closes the budget alerts: how often they come and how to stop
+// them.
+var budgetFooter = map[i18n.Locale]string{
+	i18n.PtBR: "Este aviso sai uma vez por orçamento e mês. Para não receber mais, desligue os alertas de orçamento nas preferências do app.",
+	i18n.EsES: "Este aviso se envía una vez por presupuesto y mes. Para no recibirlo más, desactiva las alertas de presupuesto en las preferencias de la app.",
+	i18n.EnUS: "This notice goes out once per budget and month. To stop receiving it, turn off budget alerts in the app preferences.",
 }
