@@ -27,6 +27,10 @@ var (
 	ErrUsedByRecurrence = errors.New("used by a recurrence")
 	// ErrBudgetExists means the category already has a budget in the month.
 	ErrBudgetExists = errors.New("budget exists")
+	// ErrExceedsPosition means the movements of an investment would sell
+	// more units than it held on the day of a sale (or pass the bounds of
+	// a position).
+	ErrExceedsPosition = errors.New("exceeds position")
 )
 
 // Field error codes, stable for clients to switch on.
@@ -44,6 +48,11 @@ const (
 	// CodeKindMismatch is a reference to a category of the other kind (an
 	// income category on an expense).
 	CodeKindMismatch = "kind_mismatch"
+	// CodeCurrencyMismatch is a reference to an account in another currency
+	// (an investment kept at an account).
+	CodeCurrencyMismatch = "currency_mismatch"
+	// CodeExceedsPosition is a sale of more units than held on its day.
+	CodeExceedsPosition = "exceeds_position"
 )
 
 // FieldError is one invalid input field.
