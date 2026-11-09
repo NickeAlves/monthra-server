@@ -38,6 +38,7 @@ type featureServices struct {
 	categories   *categories.Service
 	transactions *transactions.Service
 	recurrences  *recurrences.Service
+	budgets      *budgets.Service
 }
 
 // featureDeps is what the domain features are built on.
@@ -82,11 +83,14 @@ func newFeatures(d featureDeps) features {
 		accounts.Options{Recurrences: recurrencesService, AfterWrite: hooks})
 	// users.categories_seeded_at marks who already got the default set.
 	categoriesService := categories.NewService(categoriesStore, users, ledger,
-		categories.Options{Recurrences: recurrencesStore, AfterWrite: hooks})
+		categories.Options{Recurrences: recurrencesStore, Budgets: budgetsStore, AfterWrite: hooks})
 	transactionsService := transactions.NewService(ledger, accountsStore, categoriesStore,
 		transactions.Options{Metrics: metrics, Series: recurrencesService, AfterWrite: hooks})
 	dashboardService := dashboard.NewService(accountsStore, ledger, recurrencesService, summaries,
 		dashboard.Options{Logger: logger, Metrics: metrics})
+	// The budgets read what was spent after the recurrences create their
+	// occurrences, so they come after them (the alerts came before).
+	budgetsService := budgets.NewService(budgetsStore, users, categoriesStore, ledger, recurrencesService, budgets.Options{})
 	return features{
 		routes: []handler.Routes{
 			&handler.Accounts{Service: accountsService, Logger: logger},
@@ -94,6 +98,7 @@ func newFeatures(d featureDeps) features {
 			&handler.Transactions{Service: transactionsService, Logger: logger},
 			&handler.Recurrences{Service: recurrencesService, Logger: logger},
 			&handler.Dashboard{Service: dashboardService, Logger: logger},
+			&handler.Budgets{Service: budgetsService, Logger: logger},
 		},
 		// Recurrences first, so no read during the deletion creates
 		// occurrences again; then transactions: a deletion interrupted
@@ -112,7 +117,7 @@ func newFeatures(d featureDeps) features {
 		},
 		services: featureServices{
 			accounts: accountsService, categories: categoriesService,
-			transactions: transactionsService, recurrences: recurrencesService,
+			transactions: transactionsService, recurrences: recurrencesService, budgets: budgetsService,
 		},
 	}
 }

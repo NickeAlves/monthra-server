@@ -519,3 +519,47 @@ func TestDeleteRunsTheHookWhenItMovesTransactions(t *testing.T) {
 	require.NoError(t, svc.Delete(ctx, "u1", food.ID, fun.ID))
 	assert.Equal(t, 1, invalid["u1"])
 }
+
+// memBudgets records the categories whose budgets were dropped.
+type memBudgets struct {
+	dropped []string
+	err     error
+}
+
+func (b *memBudgets) DeleteByCategory(_ context.Context, userID, categoryID string) error {
+	if b.err != nil {
+		return b.err
+	}
+	b.dropped = append(b.dropped, userID+" "+categoryID)
+	return nil
+}
+
+func TestDeleteDropsTheBudgets(t *testing.T) {
+	ctx := context.Background()
+	store, usage, budgets := newMemStore(), newMemUsage(), &memBudgets{}
+	svc := NewService(store, newMemMarker(), usage, Options{Now: func() time.Time { return t0 }, Budgets: budgets})
+	food, err := svc.Create(ctx, "u1", food())
+	require.NoError(t, err)
+	fun, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Fun", Kind: "expense", Icon: "party-popper", Color: "#00AA00"})
+	require.NoError(t, err)
+	spare, err := svc.Create(ctx, "u1", domain.CategoryInput{Name: "Spare", Kind: "expense", Icon: "gift", Color: "#0000AA"})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Delete(ctx, "u1", spare.ID, ""))
+	usage.byCategory[food.ID] = 3
+	require.NoError(t, svc.Delete(ctx, "u1", food.ID, fun.ID))
+	assert.Equal(t, []string{"u1 " + spare.ID, "u1 " + food.ID}, budgets.dropped, "with or without reassignTo")
+
+	// In use, or another user's: nothing is dropped.
+	usage.byCategory[fun.ID] = 1
+	require.ErrorIs(t, svc.Delete(ctx, "u1", fun.ID, ""), domain.ErrCategoryInUse)
+	require.ErrorIs(t, svc.Delete(ctx, "u2", fun.ID, ""), domain.ErrNotFound)
+	assert.Len(t, budgets.dropped, 2)
+
+	// The budgets go first: a failure keeps the category, to delete again.
+	budgets.err = errors.New("mongo down")
+	usage.byCategory[fun.ID] = 0
+	assert.ErrorContains(t, svc.Delete(ctx, "u1", fun.ID, ""), "delete budgets of category: mongo down")
+	_, err = svc.Get(ctx, "u1", fun.ID)
+	require.NoError(t, err)
+}

@@ -101,18 +101,18 @@ func newCategoryTotals(list []domain.CategoryTotal) []CategoryTotal {
 	return out
 }
 
-// SummaryQuery is a parsed GET /dashboard/summary query; zero fields were
-// not given.
-type SummaryQuery struct {
+// MonthQuery is a parsed ?month&asOf query (GET /dashboard/summary, GET
+// /budgets); zero fields were not given.
+type MonthQuery struct {
 	Month domain.Month
 	AsOf  domain.Date
 }
 
-// ParseSummaryQuery reads ?month=YYYY-MM&asOf=YYYY-MM-DD, or returns a
+// ParseMonthQuery reads ?month=YYYY-MM&asOf=YYYY-MM-DD, or returns a
 // *domain.ValidationError naming each invalid parameter.
-func ParseSummaryQuery(q url.Values) (SummaryQuery, error) {
+func ParseMonthQuery(q url.Values) (MonthQuery, error) {
 	var v domain.Validation
-	var out SummaryQuery
+	var out MonthQuery
 	var err error
 	if raw := q.Get("month"); raw != "" {
 		out.Month, err = domain.ParseMonth(raw)
@@ -123,7 +123,7 @@ func ParseSummaryQuery(q url.Values) (SummaryQuery, error) {
 		v.Check("asOf", err)
 	}
 	if err := v.Err(); err != nil {
-		return SummaryQuery{}, err
+		return MonthQuery{}, err
 	}
 	return out, nil
 }

@@ -49,6 +49,12 @@ type Usage interface {
 	ReassignCategory(ctx context.Context, userID, from, to string, at time.Time) error
 }
 
+// Budgets drops the budgets of a category being deleted, in every month:
+// they plan spending on it, and are no history of their own.
+type Budgets interface {
+	DeleteByCategory(ctx context.Context, userID, categoryID string) error
+}
+
 // WriteHook runs after every write attempt to a user's finance data (it
 // drops the cached dashboard summaries and checks the budget alerts). It
 // never fails.
