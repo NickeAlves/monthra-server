@@ -116,37 +116,9 @@ func BuildSummary(month Month, today Date, accounts []Account, flows []FlowSum, 
 	first := month.AddMonths(1 - SummaryHistoryMonths)
 	b := summaryBuilder{month: month, first: first, byCurrency: map[string]*CurrencySummary{}}
 
-	currencyOf := make(map[string]string, len(accounts))
-	balances := make(map[string]int64, len(accounts))
-	// What each currency held before the history, then moved in each month.
-	opening := map[string]int64{}
-	moved := map[string][]int64{}
+	worth := newNetWorth(accounts, legs, first, SummaryHistoryMonths)
 	for _, a := range accounts {
-		currencyOf[a.ID] = a.Currency
-		balances[a.ID] = a.InitialBalance
-		opening[a.Currency] += a.InitialBalance
 		b.currency(a.Currency)
-	}
-	for _, l := range legs {
-		c, ok := currencyOf[l.AccountID]
-		if !ok {
-			// Only an account deleted while the summary was read.
-			continue
-		}
-		i := l.Month.Sub(first)
-		if i >= SummaryHistoryMonths && !l.Month.IsZero() {
-			// After the summary's month: the legs come up to its cut only.
-			continue
-		}
-		balances[l.AccountID] += l.Sum
-		if l.Month.IsZero() || i < 0 {
-			opening[c] += l.Sum
-			continue
-		}
-		if moved[c] == nil {
-			moved[c] = make([]int64, SummaryHistoryMonths)
-		}
-		moved[c][i] += l.Sum
 	}
 	for _, f := range flows {
 		b.flow(f)
@@ -166,28 +138,91 @@ func BuildSummary(month Month, today Date, accounts []Account, flows []FlowSum, 
 
 	out := Summary{Month: month, AsOf: cut, Currencies: []CurrencySummary{}, Accounts: make([]AccountBalance, len(accounts))}
 	for i, a := range accounts {
-		out.Accounts[i] = AccountBalance{AccountID: a.ID, Currency: a.Currency, Balance: balances[a.ID]}
+		out.Accounts[i] = AccountBalance{AccountID: a.ID, Currency: a.Currency, Balance: worth.balances[a.ID]}
 	}
 	last := MonthOf(cut)
 	for _, code := range b.order() {
 		c := b.byCurrency[code]
 		c.Net = c.Income - c.Expense
-		running := opening[code]
+		series, balance := worth.series(code, last)
 		for i := range c.History {
-			if moved[code] != nil {
-				running += moved[code][i]
-			}
-			if !last.Before(c.History[i].Month) {
-				v := running
-				c.History[i].NetWorth = &v
-			}
+			c.History[i].NetWorth = series[i]
 		}
-		c.Balance = running
+		c.Balance = balance
 		sortTotals(c.ExpensesByCategory)
 		sortTotals(c.IncomeByCategory)
 		out.Currencies = append(out.Currencies, *c)
 	}
 	return out
+}
+
+// netWorth is what the accounts held in each currency, month by month, from
+// their initial balances and the legs of their transactions: what they
+// held before month first (the legs under the zero Month or before first
+// included), then what moved in each of the months months from first on.
+type netWorth struct {
+	first   Month
+	months  int
+	opening map[string]int64
+	moved   map[string][]int64
+	// balances is what each account holds after every leg.
+	balances map[string]int64
+}
+
+// newNetWorth sums accounts and legs, the LegSums of their transactions up
+// to a cut within the months from first. A leg of a later month (none, when
+// the legs come up to the cut) or of an account not in accounts (only one
+// deleted while it was read) is left out.
+func newNetWorth(accounts []Account, legs []LegSum, first Month, months int) netWorth {
+	w := netWorth{
+		first: first, months: months,
+		opening: map[string]int64{}, moved: map[string][]int64{}, balances: make(map[string]int64, len(accounts)),
+	}
+	currencyOf := make(map[string]string, len(accounts))
+	for _, a := range accounts {
+		currencyOf[a.ID] = a.Currency
+		w.balances[a.ID] = a.InitialBalance
+		w.opening[a.Currency] += a.InitialBalance
+	}
+	for _, l := range legs {
+		c, ok := currencyOf[l.AccountID]
+		if !ok {
+			continue
+		}
+		i := l.Month.Sub(first)
+		if i >= months && !l.Month.IsZero() {
+			continue
+		}
+		w.balances[l.AccountID] += l.Sum
+		if l.Month.IsZero() || i < 0 {
+			w.opening[c] += l.Sum
+			continue
+		}
+		if w.moved[c] == nil {
+			w.moved[c] = make([]int64, months)
+		}
+		w.moved[c][i] += l.Sum
+	}
+	return w
+}
+
+// series returns what the accounts in currency held at the end of each
+// month, nil after month last (the month of the cut), and what they held
+// at the end of the last one.
+func (w netWorth) series(currency string, last Month) ([]*int64, int64) {
+	out := make([]*int64, w.months)
+	running := w.opening[currency]
+	moved := w.moved[currency]
+	for i := range out {
+		if moved != nil {
+			running += moved[i]
+		}
+		if !last.Before(w.first.AddMonths(i)) {
+			v := running
+			out[i] = &v
+		}
+	}
+	return out, running
 }
 
 // summaryBuilder gathers the summary of each currency.
