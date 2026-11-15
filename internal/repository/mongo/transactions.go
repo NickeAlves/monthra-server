@@ -727,11 +727,7 @@ func (r *Transactions) Flows(ctx context.Context, userID string, from, to domain
 		return []domain.FlowSum{}, nil //nolint:nilerr // an id that cannot exist owns nothing
 	}
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.D{
-			{Key: "user_id", Value: uid},
-			{Key: "date", Value: bson.D{{Key: "$gte", Value: from.Time()}, {Key: "$lte", Value: to.Time()}}},
-			{Key: "kind", Value: bson.D{{Key: "$in", Value: bson.A{string(domain.TransactionExpense), string(domain.TransactionIncome)}}}},
-		}}},
+		{{Key: "$match", Value: flowMatch(uid, from, to)}},
 		{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
 				{Key: "month", Value: monthOfDate},
@@ -759,6 +755,117 @@ func (r *Transactions) Flows(ctx context.Context, userID string, from, to domain
 		}
 		if d.ID.Category != nil {
 			out[i].CategoryID = d.ID.Category.Hex()
+		}
+	}
+	return out, nil
+}
+
+// flowMatch selects the expenses and the income of uid from day from to day
+// to (both included), through the {user_id, date} index.
+func flowMatch(uid bson.ObjectID, from, to domain.Date) bson.D {
+	return bson.D{
+		{Key: "user_id", Value: uid},
+		{Key: "date", Value: bson.D{{Key: "$gte", Value: from.Time()}, {Key: "$lte", Value: to.Time()}}},
+		{Key: "kind", Value: bson.D{{Key: "$in", Value: bson.A{string(domain.TransactionExpense), string(domain.TransactionIncome)}}}},
+	}
+}
+
+// accountFlowDoc is one group of AccountFlows.
+type accountFlowDoc struct {
+	ID struct {
+		Currency string        `bson:"currency"`
+		Kind     string        `bson:"kind"`
+		Account  bson.ObjectID `bson:"account"`
+	} `bson:"_id"`
+	Amount int64 `bson:"amount"`
+	Count  int   `bson:"count"`
+}
+
+// AccountFlows sums the expenses and the income of userID from day from to
+// day to (both included) by currency, kind and account; transfers are left
+// out. It reads the transactions of those days only.
+func (r *Transactions) AccountFlows(ctx context.Context, userID string, from, to domain.Date) ([]domain.AccountFlowSum, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return []domain.AccountFlowSum{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: flowMatch(uid, from, to)}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "currency", Value: "$currency"},
+				{Key: "kind", Value: "$kind"},
+				{Key: "account", Value: "$account_id"},
+			}},
+			{Key: "amount", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
+			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+		}}},
+	}
+	cur, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("sum flows by account: %w", err)
+	}
+	var docs []accountFlowDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode flows by account: %w", err)
+	}
+	out := make([]domain.AccountFlowSum, len(docs))
+	for i, d := range docs {
+		out[i] = domain.AccountFlowSum{
+			Currency: d.ID.Currency, Kind: domain.TransactionKind(d.ID.Kind), AccountID: d.ID.Account.Hex(),
+			Amount: d.Amount, Count: d.Count,
+		}
+	}
+	return out, nil
+}
+
+// tagFlowDoc is one group of TagFlows.
+type tagFlowDoc struct {
+	ID struct {
+		Currency string `bson:"currency"`
+		Kind     string `bson:"kind"`
+		Tag      string `bson:"tag"`
+	} `bson:"_id"`
+	Amount int64 `bson:"amount"`
+	Count  int   `bson:"count"`
+}
+
+// TagFlows sums the expenses and the income of userID from day from to day
+// to (both included) by currency, kind and tag: a transaction with several
+// tags counts under each, one without tags under none; transfers are left
+// out. It reads the transactions of those days only.
+func (r *Transactions) TagFlows(ctx context.Context, userID string, from, to domain.Date) ([]domain.TagFlowSum, error) {
+	uid, err := objectID(userID)
+	if err != nil {
+		return []domain.TagFlowSum{}, nil //nolint:nilerr // an id that cannot exist owns nothing
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: flowMatch(uid, from, to)}},
+		// Tags are unique on a transaction (NormalizeTag), so none counts twice.
+		{{Key: "$unwind", Value: "$tags"}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "currency", Value: "$currency"},
+				{Key: "kind", Value: "$kind"},
+				{Key: "tag", Value: "$tags"},
+			}},
+			{Key: "amount", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
+			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+		}}},
+	}
+	cur, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("sum flows by tag: %w", err)
+	}
+	var docs []tagFlowDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("decode flows by tag: %w", err)
+	}
+	out := make([]domain.TagFlowSum, len(docs))
+	for i, d := range docs {
+		out[i] = domain.TagFlowSum{
+			Currency: d.ID.Currency, Kind: domain.TransactionKind(d.ID.Kind), Tag: d.ID.Tag,
+			Amount: d.Amount, Count: d.Count,
 		}
 	}
 	return out, nil
