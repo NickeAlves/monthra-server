@@ -138,24 +138,9 @@ func (s *Service) DeleteAccount(ctx context.Context, p core.Principal, in Delete
 	if err != nil {
 		return err
 	}
-	if err := s.reauthenticate(ctx, u, in.Password, c); err != nil {
+	factor, err := s.stepUp(ctx, u, in.Password, in.Code, c)
+	if err != nil {
 		return err
-	}
-	emailKey := core.HashIdentifier("email", u.Email)
-	factor := ""
-	if u.MFAEnabled() {
-		if in.Code == "" {
-			return ErrMFACodeInvalid
-		}
-		var reason string
-		factor, reason, err = s.checkSecondFactor(ctx, u, in.Code)
-		if err != nil {
-			return err
-		}
-		if factor == "" {
-			s.secondFactorFailed(ctx, u.ID, emailKey, c, reason)
-			return ErrMFACodeInvalid
-		}
 	}
 
 	now := s.o.Now()
@@ -174,10 +159,36 @@ func (s *Service) DeleteAccount(ctx context.Context, p core.Principal, in Delete
 		return fmt.Errorf("delete user: %w", err)
 	}
 	// A new account on the same address starts with a clean slate.
-	if err := s.Lockout.Reset(ctx, emailKey); err != nil {
+	if err := s.Lockout.Reset(ctx, core.HashIdentifier("email", u.Email)); err != nil {
 		s.o.Logger.WarnContext(ctx, "reset login lockout", slog.String("error", err.Error()))
 	}
 	s.record(ctx, audit.EventAccountDeleted, u.ID, p.SessionID, c, factor)
 	s.Mailer.Send(ctx, email.Message{To: u.Email, Locale: u.Preferences.Locale, Template: email.TemplateAccountDeleted})
 	return nil
+}
+
+// stepUp asks the caller for the password again and, when MFA is on, for a
+// current code (TOTP or recovery), before an action a stolen session alone
+// must not take (deleting or exporting the account). It returns how the
+// second factor was checked ("" with MFA off). Wrong passwords and codes
+// count toward the login lockout of the address; a missing code is no guess.
+func (s *Service) stepUp(ctx context.Context, u domain.User, password, code string, c Client) (factor string, err error) {
+	if err := s.reauthenticate(ctx, u, password, c); err != nil {
+		return "", err
+	}
+	if !u.MFAEnabled() {
+		return "", nil
+	}
+	if code == "" {
+		return "", ErrMFACodeInvalid
+	}
+	factor, reason, err := s.checkSecondFactor(ctx, u, code)
+	if err != nil {
+		return "", err
+	}
+	if factor == "" {
+		s.secondFactorFailed(ctx, u.ID, core.HashIdentifier("email", u.Email), c, reason)
+		return "", ErrMFACodeInvalid
+	}
+	return factor, nil
 }
