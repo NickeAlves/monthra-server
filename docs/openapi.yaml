@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.13.0
+  version: 0.14.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -326,11 +326,33 @@ info:
       (`409 category_in_use`) until `reassignTo` moves it.
     - Up to 200 investments (`409 limit_reached`) and 5000 movements each.
 
+    ## Reports (`/api/v1/reports`)
+
+    - `GET /reports/summary?from=YYYY-MM&to=YYYY-MM` sums whole months by currency, with no
+      conversion, as the dashboard counts them: every day of each month (installments still
+      to come included), the income of the investments as income, transfers as neither. By
+      default it covers the 12 months up to the reader's; at most 60 months
+      (`to: out_of_range`), never ending before it starts (`to: invalid`).
+    - Beside the totals (`savingsRateBps` is `net / income` in basis points, null without
+      income) come each month (`netWorth` at its end, null after `asOf`), the categories (with
+      `previousAmount`, the period of the same length right before), the accounts and the
+      tags (a transaction counts under each of its tags). The investments' income
+      (`investmentIncome`) is in no account and no tag.
+    - The app renders the PDF of a report; the server exports CSV only.
+    - `GET /reports/export?format=csv` takes the filters of `GET /transactions` and streams
+      every transaction they select, newest first, as an attachment. The layout follows the
+      caller's language: pt-BR and es-ES split columns on `;` with a decimal comma and
+      `dd/mm/yyyy` days, en-US on `,` with a decimal point and ISO days. The file is UTF-8 with
+      a byte order mark; headers, kinds and default category names are translated. Amounts
+      are signed (expenses and transfers out negative), with no thousands separator; text
+      that a spreadsheet would read as a formula starts with `'`. Each export is audited.
+
     ## Rate limits
 
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
     `RateLimit-Reset` (seconds). A spent budget answers `429` (`rate_limited`) with
-    `Retry-After` (seconds).
+    `Retry-After` (seconds). On top of the per-user budget, the reports have their own (30
+    per minute by default) and the exports theirs (10 per hour).
   license:
     name: Proprietary
 servers:
@@ -361,6 +383,8 @@ tags:
     description: The caller's monthly budgets by expense category, and their alerts
   - name: investments
     description: The caller's portfolio, its movements and positions
+  - name: reports
+    description: The caller's reports of a period and the export of their transactions
 paths:
   /healthz:
     get:
@@ -1439,69 +1463,16 @@ paths:
         - bearerAuth: []
         - cookieAuth: []
       parameters:
-        - name: from
-          in: query
-          required: false
-          description: First day included.
-          schema:
-            $ref: "#/components/schemas/Date"
-        - name: to
-          in: query
-          required: false
-          description: "Last day included; not before `from` (`to: invalid`)."
-          schema:
-            $ref: "#/components/schemas/Date"
-        - name: accountId
-          in: query
-          required: false
-          description: The account's transactions and the transfers it received.
-          schema:
-            type: string
-        - name: categoryId
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: kind
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [expense, income, transfer]
-        - name: tag
-          in: query
-          required: false
-          description: One tag, matched ignoring case.
-          schema:
-            type: string
-            maxLength: 30
-        - name: q
-          in: query
-          required: false
-          description: Text the description contains, ignoring case and accents (`cafe` finds `Café`).
-          schema:
-            type: string
-            maxLength: 100
-        - name: invoice
-          in: query
-          required: false
-          description: |
-            One invoice of the card `accountId` (required with it: `accountId: required`): its
-            charges, credits and the payments to it.
-          schema:
-            $ref: "#/components/schemas/Month"
-        - name: installmentGroupId
-          in: query
-          required: false
-          description: The installments of one purchase (`installment.groupId`).
-          schema:
-            type: string
-        - name: recurrenceId
-          in: query
-          required: false
-          description: The occurrences of one recurrence (`recurrence.id`).
-          schema:
-            type: string
+        - $ref: "#/components/parameters/TransactionFrom"
+        - $ref: "#/components/parameters/TransactionTo"
+        - $ref: "#/components/parameters/TransactionAccountId"
+        - $ref: "#/components/parameters/TransactionCategoryId"
+        - $ref: "#/components/parameters/TransactionKind"
+        - $ref: "#/components/parameters/TransactionTag"
+        - $ref: "#/components/parameters/TransactionSearch"
+        - $ref: "#/components/parameters/TransactionInvoice"
+        - $ref: "#/components/parameters/TransactionInstallmentGroupId"
+        - $ref: "#/components/parameters/TransactionRecurrenceId"
         - $ref: "#/components/parameters/AsOf"
         - name: limit
           in: query
@@ -2449,6 +2420,126 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/reports/summary:
+    get:
+      tags: [reports]
+      summary: Report a period
+      description: |
+        The caller's whole months from `from` through `to`, by currency: income, expense, net
+        and savings rate, each month with its net worth, the categories (beside the period of
+        the same length before), the accounts and the tags. The occurrences of the recurrences
+        due up to the reader's today are created first. Its own budget applies on top of the
+        per-user one.
+      operationId: reportSummary
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: The first month; 11 months before `to` by default.
+          schema:
+            $ref: "#/components/schemas/Month"
+        - name: to
+          in: query
+          required: false
+          description: |
+            The last month; the month of the reader's today by default (or `from`, when that
+            comes later). At most 60 months from `from` (`to: out_of_range`), not before it
+            (`to: invalid`).
+          schema:
+            $ref: "#/components/schemas/Month"
+        - name: asOf
+          in: query
+          required: false
+          description: |
+            The client's local today, held within a day of today in UTC. Today in UTC when
+            absent.
+          schema:
+            $ref: "#/components/schemas/Date"
+      responses:
+        "200":
+          description: "The report (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Report"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/reports/export:
+    get:
+      tags: [reports]
+      summary: Export the transactions
+      description: |
+        Every transaction the filters select (those of `GET /transactions`), newest day first,
+        as a CSV attachment in the layout of the caller's language (see Reports above). The
+        occurrences of the recurrences due up to the reader's today are created first. The
+        file is streamed: a failure after it started aborts the response, so a download that
+        does not finish is incomplete. Each export is audited (`transactions_exported`) and has
+        its own budget on top of the per-user one.
+      operationId: exportTransactions
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: true
+          description: "`csv` (`format: required`, `format: invalid` otherwise; the app renders the PDFs)."
+          schema:
+            type: string
+            enum: [csv]
+        - $ref: "#/components/parameters/TransactionFrom"
+        - $ref: "#/components/parameters/TransactionTo"
+        - $ref: "#/components/parameters/TransactionAccountId"
+        - $ref: "#/components/parameters/TransactionCategoryId"
+        - $ref: "#/components/parameters/TransactionKind"
+        - $ref: "#/components/parameters/TransactionTag"
+        - $ref: "#/components/parameters/TransactionSearch"
+        - $ref: "#/components/parameters/TransactionInvoice"
+        - $ref: "#/components/parameters/TransactionInstallmentGroupId"
+        - $ref: "#/components/parameters/TransactionRecurrenceId"
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: |
+            The file (`Cache-Control: no-store`), named after the reader's today. Columns: day,
+            kind, description, category, account, amount, currency, destination account,
+            destination amount, destination currency, tags, installment (`3/10`) and card
+            invoice.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="monthra-transactions-YYYY-MM-DD.csv"`'
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+              examples:
+                pt-BR:
+                  value: |
+                    Data;Tipo;Descrição;Categoria;Conta;Valor;Moeda;Conta de destino;Valor de destino;Moeda de destino;Tags;Parcela;Fatura do cartão
+                    08/11/2026;Despesa;Café;Restaurantes;Cartão;-12,50;BRL;;;;trabalho;;12/2026
+                en-US:
+                  value: |
+                    Date,Type,Description,Category,Account,Amount,Currency,Destination account,Destination amount,Destination currency,Tags,Installment,Card invoice
+                    2026-11-08,Expense,Coffee,Dining out,Card,-12.50,BRL,,,,work,,2026-12
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     AsOf:
@@ -2461,6 +2552,79 @@ components:
         from today in UTC). Today in UTC when absent.
       schema:
         $ref: "#/components/schemas/Date"
+    TransactionFrom:
+      name: from
+      in: query
+      required: false
+      description: First day included.
+      schema:
+        $ref: "#/components/schemas/Date"
+    TransactionTo:
+      name: to
+      in: query
+      required: false
+      description: "Last day included; not before `from` (`to: invalid`)."
+      schema:
+        $ref: "#/components/schemas/Date"
+    TransactionAccountId:
+      name: accountId
+      in: query
+      required: false
+      description: The account's transactions and the transfers it received.
+      schema:
+        type: string
+    TransactionCategoryId:
+      name: categoryId
+      in: query
+      required: false
+      schema:
+        type: string
+    TransactionKind:
+      name: kind
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [expense, income, transfer]
+    TransactionTag:
+      name: tag
+      in: query
+      required: false
+      description: One tag, matched ignoring case.
+      schema:
+        type: string
+        maxLength: 30
+    TransactionSearch:
+      name: q
+      in: query
+      required: false
+      description: Text the description contains, ignoring case and accents (`cafe` finds `Café`).
+      schema:
+        type: string
+        maxLength: 100
+    TransactionInvoice:
+      name: invoice
+      in: query
+      required: false
+      description: |
+        One invoice of the card `accountId` (required with it: `accountId: required`): its
+        charges, credits and the payments to it.
+      schema:
+        $ref: "#/components/schemas/Month"
+    TransactionInstallmentGroupId:
+      name: installmentGroupId
+      in: query
+      required: false
+      description: The installments of one purchase (`installment.groupId`).
+      schema:
+        type: string
+    TransactionRecurrenceId:
+      name: recurrenceId
+      in: query
+      required: false
+      description: The occurrences of one recurrence (`recurrence.id`).
+      schema:
+        type: string
     EditScope:
       name: scope
       in: query
@@ -4162,6 +4326,157 @@ components:
         status:
           type: string
           enum: [ok]
+    Report:
+      type: object
+      required: [from, to, asOf, previous, currencies]
+      properties:
+        from:
+          $ref: "#/components/schemas/Month"
+        to:
+          $ref: "#/components/schemas/Month"
+        asOf:
+          $ref: "#/components/schemas/Date"
+          description: The day the net worth counts up to (`to`'s last day, or the reader's today when that comes first).
+        previous:
+          type: object
+          required: [from, to]
+          description: The period of the same length right before.
+          properties:
+            from:
+              $ref: "#/components/schemas/Month"
+            to:
+              $ref: "#/components/schemas/Month"
+        currencies:
+          type: array
+          description: One per currency of the caller's accounts or flows, alphabetically.
+          items:
+            $ref: "#/components/schemas/CurrencyReport"
+    PeriodTotals:
+      type: object
+      required: [income, expense, net, savingsRateBps]
+      description: Amounts in minor units of the currency.
+      properties:
+        income:
+          type: integer
+          format: int64
+        expense:
+          type: integer
+          format: int64
+        net:
+          type: integer
+          format: int64
+          description: "`income - expense`."
+        savingsRateBps:
+          type: [integer, "null"]
+          format: int64
+          description: "`net / income` in basis points (1234 is 12.34%), negative when more went out; null without income."
+    CurrencyReport:
+      allOf:
+        - $ref: "#/components/schemas/PeriodTotals"
+        - type: object
+          required: [currency, investmentIncome, previous, months, expensesByCategory, incomeByCategory, byAccount, expensesByTag, incomeByTag]
+          properties:
+            currency:
+              type: string
+              enum: [BRL, USD, EUR]
+            investmentIncome:
+              type: integer
+              format: int64
+              description: The part of `income` the investments paid; in no account and no tag.
+            previous:
+              $ref: "#/components/schemas/PeriodTotals"
+            months:
+              type: array
+              description: Each month of the period, oldest first.
+              items:
+                $ref: "#/components/schemas/ReportMonth"
+            expensesByCategory:
+              type: array
+              description: The largest first; categories of the period before only come last, with `amount` 0.
+              items:
+                $ref: "#/components/schemas/CategoryComparison"
+            incomeByCategory:
+              type: array
+              description: The largest first; categories of the period before only come last, with `amount` 0.
+              items:
+                $ref: "#/components/schemas/CategoryComparison"
+            byAccount:
+              type: array
+              description: The accounts with transactions in the period (archived ones included), the one that moved the most first.
+              items:
+                $ref: "#/components/schemas/AccountTotal"
+            expensesByTag:
+              type: array
+              description: The largest first; a transaction counts under each of its tags.
+              items:
+                $ref: "#/components/schemas/TagTotal"
+            incomeByTag:
+              type: array
+              description: The largest first; a transaction counts under each of its tags.
+              items:
+                $ref: "#/components/schemas/TagTotal"
+    ReportMonth:
+      type: object
+      required: [month, income, expense, net, netWorth]
+      properties:
+        month:
+          $ref: "#/components/schemas/Month"
+        income:
+          type: integer
+          format: int64
+        expense:
+          type: integer
+          format: int64
+        net:
+          type: integer
+          format: int64
+        netWorth:
+          type: [integer, "null"]
+          format: int64
+          description: The balance at the end of the month (on `asOf` in its month); null after `asOf`.
+    CategoryComparison:
+      type: object
+      required: [categoryId, amount, count, previousAmount]
+      properties:
+        categoryId:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        count:
+          type: integer
+          description: How many transactions in the period.
+        previousAmount:
+          type: integer
+          format: int64
+          description: What it added up to in the period before.
+    AccountTotal:
+      type: object
+      required: [accountId, income, expense, count]
+      properties:
+        accountId:
+          type: string
+        income:
+          type: integer
+          format: int64
+        expense:
+          type: integer
+          format: int64
+        count:
+          type: integer
+          description: How many transactions.
+    TagTotal:
+      type: object
+      required: [tag, amount, count]
+      properties:
+        tag:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        count:
+          type: integer
+          description: How many transactions.
     Problem:
       type: object
       required: [type, title, status, code]

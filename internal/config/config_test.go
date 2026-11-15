@@ -55,6 +55,8 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, Rate{Limit: 5, Period: time.Minute}, cfg.RateLimits.AuthPerEmail)
 	assert.Equal(t, Rate{Limit: 30, Period: time.Minute}, cfg.RateLimits.RefreshPerIP)
 	assert.Equal(t, Rate{Limit: 5, Period: time.Hour}, cfg.RateLimits.AuthMailPerEmail)
+	assert.Equal(t, Rate{Limit: 30, Period: time.Minute}, cfg.RateLimits.ReportsPerUser)
+	assert.Equal(t, Rate{Limit: 10, Period: time.Hour}, cfg.RateLimits.ExportPerUser)
 
 	assert.Equal(t, []string{"k1"}, cfg.Auth.SigningKeys.KIDs())
 	assert.Equal(t, "k1", cfg.Auth.ActiveKID)
@@ -121,6 +123,7 @@ func TestLoadRejectsBadAuthSettings(t *testing.T) {
 		"unknown encryption kid": {"ENCRYPTION_ACTIVE_KID", "e9", `ENCRYPTION_ACTIVE_KID "e9" is not in ENCRYPTION_KEYS`},
 		"encryption reuses csrf": {"ENCRYPTION_KEYS", "e1:" + testSecret, "reuses CSRF_SECRET or a JWT signing key"},
 		"bad mail quota":         {"RATE_LIMIT_AUTH_MAIL", "5/d", "invalid rate"},
+		"bad export budget":      {"RATE_LIMIT_EXPORT_USER", "10/d", "invalid rate"},
 		"refresh grace too long": {"REFRESH_REUSE_GRACE", "5m", "REFRESH_REUSE_GRACE must be between"},
 		"no hash concurrency":    {"PASSWORD_HASH_CONCURRENCY", "0", "PASSWORD_HASH_CONCURRENCY"},
 		"relative public url":    {"APP_PUBLIC_URL", "/app", "invalid APP_PUBLIC_URL"},

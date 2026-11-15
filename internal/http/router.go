@@ -34,6 +34,12 @@ const (
 	PolicyRefreshByIP = "refresh_ip"
 	// PolicyAPIByUser is the budget of authenticated requests, by user.
 	PolicyAPIByUser = "api_user"
+	// PolicyReportsByUser covers the reports of a period, by user, on top of
+	// PolicyAPIByUser.
+	PolicyReportsByUser = "reports_user"
+	// PolicyExportByUser covers the exports, by user, on top of
+	// PolicyAPIByUser.
+	PolicyExportByUser = "export_user"
 )
 
 // RouterOptions holds what the router needs from the rest of the app.

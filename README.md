@@ -83,6 +83,8 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 | `RATE_LIMIT_AUTH_IP` / `RATE_LIMIT_AUTH_EMAIL` | `5/m` / `5/m` | Register, login (and its MFA step), email verification and password recovery together, per client IP and per target address |
 | `RATE_LIMIT_REFRESH_IP` | `30/m` | Token refreshes per client IP |
 | `RATE_LIMIT_AUTH_MAIL` | `5/h` | Account emails (verification, sign-up attempt, password reset) one address receives |
+| `RATE_LIMIT_REPORTS_USER` | `30/m` | Reports of a period (`/reports/summary`) per user, on top of `RATE_LIMIT_API_USER` |
+| `RATE_LIMIT_EXPORT_USER` | `10/h` | Exports (`/reports/export`) per user, on top of `RATE_LIMIT_API_USER` |
 | `JWT_SIGNING_KEYS` | (required) | Ed25519 seeds as `kid:base64` pairs, comma-separated (`make secrets`) |
 | `JWT_ACTIVE_KID` | (required) | The kid that signs new tokens; the others only verify |
 | `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | `15m` / `720h` | Access: 1 to 15 minutes. Refresh: 1 hour to 90 days |
@@ -250,6 +252,17 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 - **Indexes:** `investment_movements_user_investment_date_id` (an investment's history and position), the partial `investment_movements_user_income_date` (`type: income`, the dashboard) and `investment_movements_user_category`. `DELETE /me` erases the movements, then the investments, after the budgets and before the accounts.
 - **Metric:** `monthra_investment_movements_created_total{type}`.
 
+## Reports
+
+`/api/v1/reports` holds the reports of a period and the export of the transactions (§1 item 8; user decisions of 2026-11-15). The app renders the PDFs from the JSON report, so the server serves no PDF and needs no PDF library or fonts.
+
+- **Period:** `GET /reports/summary?from=YYYY-MM&to=YYYY-MM&asOf=` sums whole months, by default the 12 up to the reader's, at most 60 (`to: out_of_range`; one ending before it starts is `to: invalid`). The period of the same length right before it comes beside it (`previous`). Every read creates the occurrences due first, and counts as the dashboard does: the whole months (installments to come included), the income of the investments as income (`investmentIncome` tells its part), transfers as neither, by currency with no conversion.
+- **Sections per currency:** the totals with `savingsRateBps` (`net / income` in basis points, half away from zero, negative when more went out, null without income); `months`, each with `netWorth` at its end as on the dashboard (null after `asOf`; the dashboard's net-worth series is shared, `domain.netWorth`); `expensesByCategory` / `incomeByCategory` with `previousAmount` (a category of the period before only comes last, `amount: 0`); `byAccount` (transactions only: the portfolio is no account); `expensesByTag` / `incomeByTag` (a transaction counts under each of its tags). Ids only, as on the dashboard.
+- **Five aggregations:** `Transactions.Flows` and `InvestmentMovements.IncomeFlows` over both periods at once, `Transactions.AccountFlows` and `Transactions.TagFlows` over the period, all through `{user_id, date}`, and `Transactions.LegSums` up to the cut. Not cached: the reports have their own budget instead.
+- **Export:** `GET /reports/export?format=csv` takes the filters of `GET /transactions` (`limit` and `cursor` are the list's) and streams every transaction they select, newest first, reading pages of 500 with the list's cursor, so memory stays flat. `format` is required; anything but `csv` is `format: invalid`. The layout follows the caller's stored language: pt-BR and es-ES split on `;` with a decimal comma and `dd/mm/yyyy`, en-US on `,` with a decimal point and ISO days. UTF-8 with a byte order mark (Excel), CRLF, translated headers, kinds and default category names. Amounts are signed (expenses and transfers out negative), with no thousands separator; a text cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` (CSV injection). Nothing is sent until the first page was read, so a failure before it answers a problem; a failure after it aborts the response (`http.ErrAbortHandler`), never a short file. The write deadline is extended to 5 minutes for the download.
+- **Audit and budgets:** each export records `transactions_exported` (reason `csv`, with IP, user agent and session) and counts `monthra_exports_total{dataset}`. `RATE_LIMIT_REPORTS_USER` (30/m) and `RATE_LIMIT_EXPORT_USER` (10/h) apply by user on top of the per-user budget, failing open like it.
+- **Not yet:** the LGPD export of all the user's data (`POST /me/export`, its own PR).
+
 ## Browser security
 
 - **CORS:** only `CORS_ALLOWED_ORIGINS` get CORS headers (with credentials). A preflight from any other origin gets 403.
@@ -261,7 +274,7 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 ## Observability
 
 - Logs: one JSON line per event on stdout, with `request_id`, `trace_id`/`span_id` and, on authenticated requests, `user_id`. Sensitive keys (password, token, secret, cookie, authorization, cpf...) are redacted; access logs leave out query strings, IPs and user agents.
-- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, `monthra_transactions_created_total{kind}`, `monthra_investment_movements_created_total{type}`, `monthra_cache_requests_total{cache,result}` (hit, miss), `monthra_cache_errors_total{cache,op}`, `monthra_budget_alerts_total{level,result}` (sent, muted), `monthra_budget_alert_errors_total`, plus Go and process metrics.
+- Metrics: `monthra_http_requests_total`, `monthra_http_request_duration_seconds` (by chi route pattern; unmatched paths share one label), `monthra_http_requests_in_flight`, `monthra_build_info`, `monthra_ratelimit_rejected_total{policy}`, `monthra_ratelimit_errors_total{policy}`, `monthra_csrf_rejected_total{reason}`, `monthra_auth_logins_total{result}`, `monthra_auth_refresh_reuse_total`, `monthra_auth_password_resets_total`, `monthra_auth_mfa_total{event}`, `monthra_email_sent_total{template,result}`, `monthra_email_dropped_total{template}`, `monthra_transactions_created_total{kind}`, `monthra_investment_movements_created_total{type}`, `monthra_cache_requests_total{cache,result}` (hit, miss), `monthra_cache_errors_total{cache,op}`, `monthra_budget_alerts_total{level,result}` (sent, muted), `monthra_budget_alert_errors_total`, `monthra_exports_total{dataset}`, plus Go and process metrics.
 - Traces: HTTP server spans named after the route, MongoDB command spans (operation and collection only, never query values) and Redis spans.
 
 ## Layout
@@ -272,7 +285,7 @@ internal/app/         wiring, servers, graceful shutdown and the local seed
 internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
-internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/, recurrences/, dashboard/)
+internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/, recurrences/, dashboard/, budgets/, investments/, reports/)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates

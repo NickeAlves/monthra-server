@@ -43,20 +43,22 @@ func (r Returns) Unrealized() int64 { return r.Value - r.Invested }
 // fees charged apart.
 func (r Returns) TotalReturn() int64 { return r.Unrealized() + r.Realized + r.Income - r.Fees }
 
-// ReturnBps is TotalReturn over Contributed in basis points (1234 is
-// 12.34%), rounded half away from zero; nil with nothing contributed. It
-// is a simple return, not a time-weighted one.
-func (r Returns) ReturnBps() *int64 {
-	if r.Contributed <= 0 {
+// ReturnBps is TotalReturn over Contributed in basis points (bps); nil with
+// nothing contributed. It is a simple return, not a time-weighted one.
+func (r Returns) ReturnBps() *int64 { return bps(r.TotalReturn(), r.Contributed) }
+
+// bps is num over den in basis points (1234 is 12.34%), rounded half away
+// from zero; nil when den is not positive. Like every number of the API, it
+// stays within MaxAmount (a return of 10^11 % on a few cents).
+func bps(num, den int64) *int64 {
+	if den <= 0 {
 		return nil
 	}
-	// A portfolio's return times 10^4 may pass an int64.
-	n := new(big.Int).Mul(big.NewInt(r.TotalReturn()), big.NewInt(10_000))
+	// num times 10^4 may pass an int64.
+	n := new(big.Int).Mul(big.NewInt(num), big.NewInt(10_000))
 	neg := n.Sign() < 0
 	n.Abs(n)
-	v := divRound(n, big.NewInt(r.Contributed))
-	// Like every number of the API, it stays within MaxAmount (a return of
-	// 10^11 % on a few cents).
+	v := divRound(n, big.NewInt(den))
 	out := MaxAmount
 	if v.IsInt64() && v.Int64() < MaxAmount {
 		out = v.Int64()

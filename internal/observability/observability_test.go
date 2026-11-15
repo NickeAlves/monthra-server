@@ -99,6 +99,7 @@ func TestMetricsExposeHTTPSeries(t *testing.T) {
 	m.CacheError("summary", "invalidate")
 	m.BudgetAlert("exceeded", "sent")
 	m.BudgetAlertError()
+	m.Exported("transactions")
 	done()
 
 	rec := httptest.NewRecorder()
@@ -117,6 +118,7 @@ func TestMetricsExposeHTTPSeries(t *testing.T) {
 	assert.Contains(t, body, `monthra_cache_errors_total{cache="summary",op="invalidate"} 1`)
 	assert.Contains(t, body, `monthra_budget_alerts_total{level="exceeded",result="sent"} 1`)
 	assert.Contains(t, body, `monthra_budget_alert_errors_total 1`)
+	assert.Contains(t, body, `monthra_exports_total{dataset="transactions"} 1`)
 	assert.True(t, strings.Contains(body, "go_goroutines"), "go runtime collector registered")
 	assert.NotNil(t, m.Registry())
 }

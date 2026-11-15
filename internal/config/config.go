@@ -108,6 +108,12 @@ type RateLimits struct {
 	// attempt, password reset) one address can be sent, so nobody can flood
 	// someone else's inbox through the sign-up or recovery forms.
 	AuthMailPerEmail Rate `env:"RATE_LIMIT_AUTH_MAIL" envDefault:"5/h"`
+	// ReportsPerUser is the budget of the reports of a period, by user, on
+	// top of APIPerUser: each one sums up to years of transactions.
+	ReportsPerUser Rate `env:"RATE_LIMIT_REPORTS_USER" envDefault:"30/m"`
+	// ExportPerUser is the budget of the exports, by user, on top of
+	// APIPerUser: each one reads every transaction it selects.
+	ExportPerUser Rate `env:"RATE_LIMIT_EXPORT_USER" envDefault:"10/h"`
 }
 
 // Auth holds the token, password and verification settings (§6.1, §6.2).
