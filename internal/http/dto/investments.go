@@ -80,8 +80,9 @@ func newReturns(r domain.Returns) Returns {
 	}
 }
 
-// Investment is the public view of an investment with its position.
-type Investment struct {
+// InvestmentRecord is an investment as stored, in the API's shape and
+// without its position: what the data export holds.
+type InvestmentRecord struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Type      string    `json:"type"`
@@ -90,9 +91,23 @@ type Investment struct {
 	Ticker    *string   `json:"ticker"`
 	AccountID *string   `json:"accountId"`
 	Source    string    `json:"source"`
-	Position  Position  `json:"position"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// NewInvestmentRecord maps an investment to its record.
+func NewInvestmentRecord(inv domain.Investment) InvestmentRecord {
+	return InvestmentRecord{
+		ID: inv.ID, Name: inv.Name, Type: string(inv.Type), Mode: string(inv.Mode), Currency: inv.Currency,
+		Ticker: orNull(inv.Ticker), AccountID: orNull(inv.AccountID), Source: string(inv.Source),
+		CreatedAt: inv.CreatedAt.UTC(), UpdatedAt: inv.UpdatedAt.UTC(),
+	}
+}
+
+// Investment is the public view of an investment with its position.
+type Investment struct {
+	InvestmentRecord
+	Position Position `json:"position"`
 }
 
 // orNull is nil for "".
@@ -123,11 +138,7 @@ func NewInvestment(ip domain.InvestmentPosition) Investment {
 		d := p.ValuedOn.String()
 		pos.ValuedOn = &d
 	}
-	return Investment{
-		ID: inv.ID, Name: inv.Name, Type: string(inv.Type), Mode: string(inv.Mode), Currency: inv.Currency,
-		Ticker: orNull(inv.Ticker), AccountID: orNull(inv.AccountID), Source: string(inv.Source),
-		Position: pos, CreatedAt: inv.CreatedAt, UpdatedAt: inv.UpdatedAt,
-	}
+	return Investment{InvestmentRecord: NewInvestmentRecord(inv), Position: pos}
 }
 
 // TypeValue is what a portfolio holds in one investment type.

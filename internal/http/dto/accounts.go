@@ -52,35 +52,45 @@ func (r UpdateAccountRequest) Patch() domain.AccountPatch {
 	return domain.AccountPatch{Name: r.Name, InitialBalance: r.InitialBalance, Card: r.Card.toDomain(), Archived: r.Archived}
 }
 
-// Account is the public view of an account. Balance counts the
-// transactions up to the day asked (the reader's today); ProjectedBalance
-// counts them all, future ones included. Both include the initial balance.
-type Account struct {
-	ID               string        `json:"id"`
-	Name             string        `json:"name"`
-	Type             string        `json:"type"`
-	Currency         string        `json:"currency"`
-	InitialBalance   int64         `json:"initialBalance"`
-	Balance          int64         `json:"balance"`
-	ProjectedBalance int64         `json:"projectedBalance"`
-	Card             *CardSettings `json:"card"`
-	Source           string        `json:"source"`
-	Archived         bool          `json:"archived"`
-	CreatedAt        time.Time     `json:"createdAt"`
-	UpdatedAt        time.Time     `json:"updatedAt"`
+// AccountRecord is an account as stored, in the API's shape: what the data
+// export holds. The owner id stays out.
+type AccountRecord struct {
+	ID             string        `json:"id"`
+	Name           string        `json:"name"`
+	Type           string        `json:"type"`
+	Currency       string        `json:"currency"`
+	InitialBalance int64         `json:"initialBalance"`
+	Card           *CardSettings `json:"card"`
+	Source         string        `json:"source"`
+	Archived       bool          `json:"archived"`
+	CreatedAt      time.Time     `json:"createdAt"`
+	UpdatedAt      time.Time     `json:"updatedAt"`
 }
 
-// NewAccount maps an account to its public view; the owner id stays out.
-func NewAccount(a domain.AccountWithBalance) Account {
-	out := Account{
+// NewAccountRecord maps an account to its record.
+func NewAccountRecord(a domain.Account) AccountRecord {
+	out := AccountRecord{
 		ID: a.ID, Name: a.Name, Type: string(a.Type), Currency: a.Currency, InitialBalance: a.InitialBalance,
-		Balance: a.Balance.Current, ProjectedBalance: a.Balance.Projected,
 		Source: string(a.Source), Archived: a.Archived(), CreatedAt: a.CreatedAt.UTC(), UpdatedAt: a.UpdatedAt.UTC(),
 	}
 	if a.Card != nil {
 		out.Card = &CardSettings{ClosingDay: a.Card.ClosingDay, DueDay: a.Card.DueDay, Limit: a.Card.Limit}
 	}
 	return out
+}
+
+// Account is the public view of an account. Balance counts the
+// transactions up to the day asked (the reader's today); ProjectedBalance
+// counts them all, future ones included. Both include the initial balance.
+type Account struct {
+	AccountRecord
+	Balance          int64 `json:"balance"`
+	ProjectedBalance int64 `json:"projectedBalance"`
+}
+
+// NewAccount maps an account to its public view; the owner id stays out.
+func NewAccount(a domain.AccountWithBalance) Account {
+	return Account{AccountRecord: NewAccountRecord(a.Account), Balance: a.Balance.Current, ProjectedBalance: a.Balance.Projected}
 }
 
 // AccountsResponse is the body of GET /accounts.
