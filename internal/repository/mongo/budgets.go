@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"iter"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -122,6 +123,19 @@ func (r *Budgets) find(ctx context.Context, filter bson.D) ([]domain.Budget, err
 		out[i] = d.toDomain()
 	}
 	return out, nil
+}
+
+// All yields every budget of userID, month by month from the oldest and by
+// category within a month (the order of the unique index), for the data
+// export. An id that cannot exist owns none.
+func (r *Budgets) All(ctx context.Context, userID string) iter.Seq2[domain.Budget, error] {
+	uid, err := objectID(userID)
+	if err != nil {
+		return none[domain.Budget]()
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "month", Value: 1}, {Key: "category_id", Value: 1}})
+	return stream(ctx, r.coll, bson.D{{Key: "user_id", Value: uid}}, opts,
+		func(d budgetDoc) (domain.Budget, error) { return d.toDomain(), nil })
 }
 
 // ByID returns budget id of userID, or domain.ErrNotFound.

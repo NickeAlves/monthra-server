@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"iter"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -122,6 +123,19 @@ func (r *Sessions) ListActive(ctx context.Context, userID string, now time.Time,
 		out[i] = d.toDomain()
 	}
 	return out, nil
+}
+
+// ForUser yields every stored session of userID, active, expired or
+// revoked (until the TTL index removes it), the newest first, for the data
+// export. An id that cannot exist owns none.
+func (r *Sessions) ForUser(ctx context.Context, userID string) iter.Seq2[domain.Session, error] {
+	uid, err := objectID(userID)
+	if err != nil {
+		return none[domain.Session]()
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	return stream(ctx, r.coll, bson.D{{Key: "user_id", Value: uid}}, opts,
+		func(d sessionDoc) (domain.Session, error) { return d.toDomain(), nil })
 }
 
 // RevokeForUser ends the session id if it belongs to userID and has not

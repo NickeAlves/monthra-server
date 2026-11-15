@@ -3,10 +3,12 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"iter"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/NickeAlves/monthra-server/internal/audit"
 )
@@ -42,4 +44,28 @@ func (a *AuditLogs) Insert(ctx context.Context, e audit.Entry) error {
 		return fmt.Errorf("insert audit log: %w", err)
 	}
 	return nil
+}
+
+func (d auditDoc) toEntry() audit.Entry {
+	e := audit.Entry{Event: audit.Event(d.Event), IP: d.IP, UserAgent: d.UserAgent, Reason: d.Reason, CreatedAt: d.CreatedAt}
+	if d.UserID != nil {
+		e.UserID = d.UserID.Hex()
+	}
+	if d.SessionID != nil {
+		e.SessionID = d.SessionID.Hex()
+	}
+	return e
+}
+
+// ForUser yields the entries of userID still kept, the newest first (index
+// audit_logs_user_created), for the data export. An id that cannot exist
+// owns none.
+func (a *AuditLogs) ForUser(ctx context.Context, userID string) iter.Seq2[audit.Entry, error] {
+	uid, err := objectID(userID)
+	if err != nil {
+		return none[audit.Entry]()
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	return stream(ctx, a.coll, bson.D{{Key: "user_id", Value: uid}}, opts,
+		func(d auditDoc) (audit.Entry, error) { return d.toEntry(), nil })
 }
