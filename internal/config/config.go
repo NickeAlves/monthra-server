@@ -114,6 +114,10 @@ type RateLimits struct {
 	// ExportPerUser is the budget of the exports, by user, on top of
 	// APIPerUser: each one reads every transaction it selects.
 	ExportPerUser Rate `env:"RATE_LIMIT_EXPORT_USER" envDefault:"10/h"`
+	// DataExportPerUser is the budget of the exports of a whole account
+	// (POST /me/export), by user, on top of APIPerUser: each one reads every
+	// record of the account, and failed step-ups count too.
+	DataExportPerUser Rate `env:"RATE_LIMIT_DATA_EXPORT_USER" envDefault:"5/h"`
 }
 
 // Auth holds the token, password and verification settings (§6.1, §6.2).

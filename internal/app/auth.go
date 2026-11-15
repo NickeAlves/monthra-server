@@ -15,6 +15,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/captcha"
 	"github.com/NickeAlves/monthra-server/internal/config"
 	"github.com/NickeAlves/monthra-server/internal/crypto/aead"
+	"github.com/NickeAlves/monthra-server/internal/dataexport"
 	"github.com/NickeAlves/monthra-server/internal/email"
 	"github.com/NickeAlves/monthra-server/internal/http/cookie"
 	"github.com/NickeAlves/monthra-server/internal/http/handler"
@@ -58,6 +59,9 @@ type authDeps struct {
 	// featureErasers delete the domain data of a user; they run before the
 	// auth ones, so an interrupted deletion can still be signed into and retried.
 	featureErasers []authuc.UserDataEraser
+	// featureExporters write the domain data of a user into the export,
+	// between the profile and the security records.
+	featureExporters []authuc.UserDataExporter
 }
 
 type authComponents struct {
@@ -126,7 +130,8 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 		Metrics: metrics,
 		// Feature data first (newFeatures), then the auth stores; the account
 		// itself goes last.
-		Erasers: append(slices.Clone(d.featureErasers), authErasers(d.db, locales)...),
+		Erasers:   append(slices.Clone(d.featureErasers), authErasers(d.db, locales)...),
+		Exporters: authExporters(d.db, d.featureExporters),
 	}, authuc.Options{
 		RefreshTTL:    cfg.Auth.RefreshTokenTTL,
 		EmailTokenTTL: cfg.Auth.EmailTokenTTL,
@@ -158,4 +163,17 @@ func authErasers(db *mongo.Database, locales cache.UserLocales) []authuc.UserDat
 		repomongo.NewUserEraser(db, repomongo.CollSessions),
 		locales,
 	}
+}
+
+// authExporters are the files of the data export: the profile, then the
+// domain data (featureExporters), then the security records the auth stores
+// keep of the user (sessions and audit log). The tokens, the password hash
+// and the MFA secret are never exported.
+func authExporters(db *mongo.Database, featureExporters []authuc.UserDataExporter) []authuc.UserDataExporter {
+	out := []authuc.UserDataExporter{dataexport.Profile(repomongo.NewUsers(db))}
+	out = append(out, featureExporters...)
+	return append(out,
+		dataexport.SessionsFile(repomongo.NewSessions(db)),
+		dataexport.AuditLogFile(repomongo.NewAuditLogs(db)),
+	)
 }

@@ -57,6 +57,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, Rate{Limit: 5, Period: time.Hour}, cfg.RateLimits.AuthMailPerEmail)
 	assert.Equal(t, Rate{Limit: 30, Period: time.Minute}, cfg.RateLimits.ReportsPerUser)
 	assert.Equal(t, Rate{Limit: 10, Period: time.Hour}, cfg.RateLimits.ExportPerUser)
+	assert.Equal(t, Rate{Limit: 5, Period: time.Hour}, cfg.RateLimits.DataExportPerUser)
 
 	assert.Equal(t, []string{"k1"}, cfg.Auth.SigningKeys.KIDs())
 	assert.Equal(t, "k1", cfg.Auth.ActiveKID)

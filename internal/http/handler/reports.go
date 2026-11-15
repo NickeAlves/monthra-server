@@ -96,7 +96,7 @@ func (h *Reports) Export(w http.ResponseWriter, r *http.Request) {
 	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(ExportWriteTimeout)); err != nil {
 		h.Logger.WarnContext(r.Context(), "extend export write deadline", slog.String("error", err.Error()))
 	}
-	out := &attachment{w: w, filename: "monthra-transactions-" + h.day(q.AsOf) + ".csv"}
+	out := &attachment{w: w, contentType: "text/csv; charset=utf-8", filename: "monthra-transactions-" + h.day(q.AsOf) + ".csv"}
 	csv := dto.TransactionsCSV{Locale: i18n.FromContext(r.Context()), Accounts: exp.Accounts, Categories: exp.Categories}
 	if err := csv.Write(out, exp.Rows); err != nil {
 		if !out.started {
@@ -117,19 +117,20 @@ func (h *Reports) day(asOf domain.Date) string {
 	return domain.Today(asOf, now()).String()
 }
 
-// attachment sends the headers of a CSV download with its first byte, so a
+// attachment sends the headers of a download with its first byte, so a
 // failure before it can still answer a problem.
 type attachment struct {
-	w        http.ResponseWriter
-	filename string
-	started  bool
+	w           http.ResponseWriter
+	contentType string
+	filename    string
+	started     bool
 }
 
 func (a *attachment) Write(p []byte) (int, error) {
 	if !a.started {
 		a.started = true
 		h := a.w.Header()
-		h.Set("Content-Type", "text/csv; charset=utf-8")
+		h.Set("Content-Type", a.contentType)
 		h.Set("Content-Disposition", `attachment; filename="`+a.filename+`"`)
 		h.Set("Cache-Control", "no-store")
 		a.w.WriteHeader(http.StatusOK)
