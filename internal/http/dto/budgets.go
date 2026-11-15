@@ -60,6 +60,27 @@ type Budget struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// BudgetRecord is a budget as stored, in the API's shape and without its
+// usage: what the data export holds, one per category and month.
+type BudgetRecord struct {
+	ID         string    `json:"id"`
+	CategoryID string    `json:"categoryId"`
+	Month      string    `json:"month"`
+	Currency   string    `json:"currency"`
+	Limit      int64     `json:"limit"`
+	WarnAt     int       `json:"warnAt"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// NewBudgetRecord maps a stored budget to its record.
+func NewBudgetRecord(b domain.Budget) BudgetRecord {
+	return BudgetRecord{
+		ID: b.ID, CategoryID: b.CategoryID, Month: b.Month.String(), Currency: b.Currency,
+		Limit: b.Limit, WarnAt: b.WarnAt, CreatedAt: b.CreatedAt.UTC(), UpdatedAt: b.UpdatedAt.UTC(),
+	}
+}
+
 // BudgetTotal adds up the budgets of a month in one currency.
 type BudgetTotal struct {
 	Currency  string `json:"currency"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -29,6 +30,7 @@ type AccountService interface {
 	RevokeSession(ctx context.Context, p auth.Principal, sessionID string, c authuc.Client) (current bool, err error)
 	RevokeOtherSessions(ctx context.Context, p auth.Principal, c authuc.Client) error
 	DeleteAccount(ctx context.Context, p auth.Principal, in authuc.DeleteAccountInput, c authuc.Client) error
+	ExportData(ctx context.Context, p auth.Principal, in authuc.ExportDataInput, c authuc.Client) (authuc.DataExport, error)
 }
 
 // Me serves /api/v1/me/*, always for the caller of the access token: no
@@ -191,6 +193,38 @@ func (h *Me) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	clearAuthCookies(w, h.Cookies)
 	noContent(w, http.StatusNoContent)
+}
+
+// Export handles POST /me/export: after the step-up, a ZIP of everything
+// the account holds (LGPD), streamed as it is read. An error before the
+// first byte answers a problem; after it the response is aborted, so the
+// client sees a failed download instead of a short archive.
+func (h *Me) Export(w http.ResponseWriter, r *http.Request) {
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req dto.ExportDataRequest
+	if !decodeBody(w, r, h.Logger, &req) {
+		return
+	}
+	exp, err := h.Account.ExportData(r.Context(), p, authuc.ExportDataInput{Password: req.Password, Code: req.Code}, client(r))
+	if err != nil {
+		writeError(w, r, h.Logger, err)
+		return
+	}
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(ExportWriteTimeout)); err != nil {
+		h.Logger.WarnContext(r.Context(), "extend export write deadline", slog.String("error", err.Error()))
+	}
+	out := &attachment{w: w, contentType: "application/zip", filename: "monthra-data-" + exp.At.UTC().Format(time.DateOnly) + ".zip"}
+	if err := exp.Write(r.Context(), out); err != nil {
+		if !out.started {
+			writeError(w, r, h.Logger, err)
+			return
+		}
+		h.Logger.ErrorContext(r.Context(), "export account data", slog.String("error", err.Error()))
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // writePrivateJSON answers 200 with personal data, which no cache may keep.

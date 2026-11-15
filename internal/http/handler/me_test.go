@@ -201,8 +201,15 @@ type fakeAccount struct {
 	principal auth.Principal
 	change    authuc.ChangePasswordInput
 	deleted   authuc.DeleteAccountInput
+	exported  authuc.ExportDataInput
+	export    authuc.DataExport
 	revoked   string
 	others    bool
+}
+
+func (f *fakeAccount) ExportData(_ context.Context, p auth.Principal, in authuc.ExportDataInput, _ authuc.Client) (authuc.DataExport, error) {
+	f.principal, f.exported = p, in
+	return f.export, f.err
 }
 
 func (f *fakeAccount) ChangePassword(_ context.Context, p auth.Principal, in authuc.ChangePasswordInput, _ authuc.Client) error {

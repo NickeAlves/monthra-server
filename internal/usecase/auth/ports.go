@@ -6,6 +6,7 @@ package auth
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/NickeAlves/monthra-server/internal/audit"
@@ -61,6 +62,19 @@ type Sessions interface {
 // runs every eraser again.
 type UserDataEraser interface {
 	EraseUserData(ctx context.Context, userID string) error
+}
+
+// UserDataExporter writes everything one feature stores about a user into
+// the data export (LGPD art. 18 II and V): one or more files of the
+// archive, in the shapes the API answers with. It must only read.
+type UserDataExporter interface {
+	ExportUserData(ctx context.Context, userID string, a Archive) error
+}
+
+// Archive takes the files of a data export; each writer is valid until the
+// next Create. *zip.Writer is one.
+type Archive interface {
+	Create(name string) (io.Writer, error)
 }
 
 // RefreshTokens persists each session's rotation chain.
@@ -142,6 +156,8 @@ type Metrics interface {
 	PasswordReset()
 	MFA(event string)
 	RateLimitRejected(policy string)
+	// Exported counts a data export started, by dataset.
+	Exported(dataset string)
 }
 
 // Deps are the collaborators of the Service.
@@ -170,4 +186,7 @@ type Deps struct {
 	// account itself. Features that store user data register theirs here,
 	// ahead of the auth stores.
 	Erasers []UserDataEraser
+	// Exporters write a user's data into the export, in order: the files of
+	// the archive follow it.
+	Exporters []UserDataExporter
 }

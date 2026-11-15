@@ -724,8 +724,16 @@ type counters struct {
 	logins      map[string]int
 	rateLimited map[string]int
 	mfa         map[string]int
+	exports     map[string]int
 	reuse       int
 	resets      int
+}
+
+func (c *counters) Exported(dataset string) {
+	if c.exports == nil {
+		c.exports = map[string]int{}
+	}
+	c.exports[dataset]++
 }
 
 func (c *counters) MFA(event string) {

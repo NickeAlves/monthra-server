@@ -35,6 +35,9 @@ const (
 	// EventTransactionsExported is an export of transactions (§5.3); its
 	// reason is the format.
 	EventTransactionsExported Event = "transactions_exported"
+	// EventDataExported is an export of every record of the account (LGPD);
+	// its reason is how the second factor was checked, if MFA is on.
+	EventDataExported Event = "data_exported"
 )
 
 // maxUserAgent bounds the stored user agent.

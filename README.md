@@ -85,6 +85,7 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 | `RATE_LIMIT_AUTH_MAIL` | `5/h` | Account emails (verification, sign-up attempt, password reset) one address receives |
 | `RATE_LIMIT_REPORTS_USER` | `30/m` | Reports of a period (`/reports/summary`) per user, on top of `RATE_LIMIT_API_USER` |
 | `RATE_LIMIT_EXPORT_USER` | `10/h` | Exports (`/reports/export`) per user, on top of `RATE_LIMIT_API_USER` |
+| `RATE_LIMIT_DATA_EXPORT_USER` | `5/h` | Data exports of the account (`POST /me/export`, failed step-ups included) per user, on top of `RATE_LIMIT_API_USER` |
 | `JWT_SIGNING_KEYS` | (required) | Ed25519 seeds as `kid:base64` pairs, comma-separated (`make secrets`) |
 | `JWT_ACTIVE_KID` | (required) | The kid that signs new tokens; the others only verify |
 | `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | `15m` / `720h` | Access: 1 to 15 minutes. Refresh: 1 hour to 90 days |
@@ -134,7 +135,7 @@ The flows and their answers are documented in [docs/openapi.yaml](docs/openapi.y
   - Wrong codes and wrong step-up passwords count toward the lockout of the address, and the password alone no longer clears it, so knowing the password does not buy unlimited guesses at the code.
   - `mfa/disable` takes the password and a code. Turning MFA on or off emails a notice. These routes answer a wrong password or code with `403`, never `401`.
 - **Email** goes through any SMTP relay, asynchronously. A bounded queue retries transient failures and drains on shutdown. Templates are translated, and they never include user-chosen text.
-- **Audit:** `register`, `email_verified`, `login_success` (with how the last factor was checked), `login_failure`, `logout`, `refresh_reuse_detected`, `password_reset_requested`, `password_reset`, `reauth_failure`, `mfa_setup`, `mfa_enabled`, `mfa_disabled`, `mfa_failure`, `mfa_recovery_code_used`, `password_changed`, `session_revoked`, `sessions_revoked` and `account_deleted` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password, token or code.
+- **Audit:** `register`, `email_verified`, `login_success` (with how the last factor was checked), `login_failure`, `logout`, `refresh_reuse_detected`, `password_reset_requested`, `password_reset`, `reauth_failure`, `mfa_setup`, `mfa_enabled`, `mfa_disabled`, `mfa_failure`, `mfa_recovery_code_used`, `password_changed`, `session_revoked`, `sessions_revoked`, `account_deleted` and `data_exported` are stored in `audit_logs` with user id, IP and user agent. They never store the address, password, token or code.
 
 ## Profile and account
 
@@ -146,6 +147,7 @@ Every `/api/v1/me` route acts on the caller of the access token; none takes a us
 - **Password change:** `POST /me/password` asks for the current password (wrong ones count toward the lockout and answer `403`), applies the policy and HIBP, signs out every other session, voids pending reset links and emails a notice. The caller's session stays.
 - **Sessions:** `GET /me/sessions` lists up to 100 active sessions (IP, user agent, `current`), the most recently used first. `DELETE /me/sessions/{id}` signs one out; another user's session answers `404` like an unknown one, and repeating the request is safe. `DELETE /me/sessions` signs out all but the current one. Revoking many sessions denies them in Redis before revoking them in MongoDB, so a Redis failure leaves nothing half done and a retry works.
 - **Account deletion (LGPD):** `DELETE /me` takes the password and, with MFA on, a code. It denies every session, runs the registered `UserDataEraser`s in order (feature data first, then the auth stores and the locale cache) and deletes the account last. Each step is idempotent and there is no transaction, so an interrupted deletion leaves an account its owner can sign in to and delete again. The owner gets a confirmation email and the address can sign up again. The audit log is kept until `AUDIT_LOG_TTL`: access records must be retained (Marco Civil art. 15, LGPD art. 16), and they hold no address.
+- **Data export (LGPD access and portability):** `POST /me/export` takes the same step-up as `DELETE /me` (the password and, with MFA on, a code) and streams a ZIP: `manifest.json` (`format`, `version` 1, `exportedAt`, `userId`), `profile.json` (as `GET /me`), then `accounts.json`, `categories.json`, `transactions.json`, `recurrences.json`, `budgets.json` (every month), `investments.json`, `investment-movements.json`, `sessions.json` (every stored session, with `revokedAt`) and `audit-log.json`. Lists are JSON arrays with one record per line, in the API's shapes, stored fields only: no balances, budget usage or positions (computed again from the records), no owner id, and never the password hash, MFA secret, recovery codes or tokens. Each feature registers a `UserDataExporter` (`internal/dataexport`) next to its eraser; the transactions are paged 500 at a time after the occurrences due are created. Headers go with the first byte, so a failure before it answers a problem and after it aborts the response (write deadline 5 min). Each export records `data_exported` (reason: how the second factor was checked), emails the owner (`data_exported`, with a reset link) and counts `monthra_exports_total{dataset="account"}`; `RATE_LIMIT_DATA_EXPORT_USER` (5/h) applies by user, failing open.
 
 ## Accounts
 
@@ -261,7 +263,7 @@ The expenses, income and transfers of the caller: `/api/v1/transactions` and `/a
 - **Five aggregations:** `Transactions.Flows` and `InvestmentMovements.IncomeFlows` over both periods at once, `Transactions.AccountFlows` and `Transactions.TagFlows` over the period, all through `{user_id, date}`, and `Transactions.LegSums` up to the cut. Not cached: the reports have their own budget instead.
 - **Export:** `GET /reports/export?format=csv` takes the filters of `GET /transactions` (`limit` and `cursor` are the list's) and streams every transaction they select, newest first, reading pages of 500 with the list's cursor, so memory stays flat. `format` is required; anything but `csv` is `format: invalid`. The layout follows the caller's stored language: pt-BR and es-ES split on `;` with a decimal comma and `dd/mm/yyyy`, en-US on `,` with a decimal point and ISO days. UTF-8 with a byte order mark (Excel), CRLF, translated headers, kinds and default category names. Amounts are signed (expenses and transfers out negative), with no thousands separator; a text cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` (CSV injection). Nothing is sent until the first page was read, so a failure before it answers a problem; a failure after it aborts the response (`http.ErrAbortHandler`), never a short file. The write deadline is extended to 5 minutes for the download.
 - **Audit and budgets:** each export records `transactions_exported` (reason `csv`, with IP, user agent and session) and counts `monthra_exports_total{dataset}`. `RATE_LIMIT_REPORTS_USER` (30/m) and `RATE_LIMIT_EXPORT_USER` (10/h) apply by user on top of the per-user budget, failing open like it.
-- **Not yet:** the LGPD export of all the user's data (`POST /me/export`, its own PR).
+- The LGPD export of all the user's data is `POST /me/export` (see Profile and account).
 
 ## Browser security
 
@@ -286,6 +288,7 @@ internal/config/      environment configuration
 internal/http/        router, servers, handler/, middleware/, dto/, problem/, cookie/
 internal/domain/      entities and validation rules (no I/O)
 internal/usecase/     use cases on ports (auth/, profile/, accounts/, categories/, transactions/, recurrences/, dashboard/, budgets/, investments/, reports/)
+internal/dataexport/  the files of the LGPD data export (one exporter per store)
 internal/auth/        Argon2id, HIBP, EdDSA JWT, opaque tokens, TOTP, recovery codes, lockout policy
 internal/crypto/aead/ AES-256-GCM sealing with a key ring (data at rest)
 internal/email/       SMTP sender, async dispatcher, localized templates

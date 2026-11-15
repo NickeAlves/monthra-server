@@ -40,6 +40,9 @@ const (
 	// PolicyExportByUser covers the exports, by user, on top of
 	// PolicyAPIByUser.
 	PolicyExportByUser = "export_user"
+	// PolicyDataExportByUser covers the exports of a whole account (LGPD),
+	// by user, on top of PolicyAPIByUser. Failed step-ups count too.
+	PolicyDataExportByUser = "data_export_user"
 )
 
 // RouterOptions holds what the router needs from the rest of the app.
@@ -82,6 +85,8 @@ type RouterOptions struct {
 	AuthRateByIP    config.Rate
 	RefreshRateByIP config.Rate
 	APIRateByUser   config.Rate
+	// DataExportRateByUser is the budget of POST /me/export.
+	DataExportRateByUser config.Rate
 }
 
 // NewRouter builds the public API handler.
@@ -190,7 +195,7 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 		r.Post("/auth/mfa/enable", opts.Auth.EnableMFA)
 		r.Post("/auth/mfa/disable", opts.Auth.DisableMFA)
 		if opts.Me != nil {
-			mountMe(r, opts.Me)
+			mountMe(r, opts.Me, limit(PolicyDataExportByUser, opts.DataExportRateByUser, middleware.ByUser, true))
 		}
 		for _, f := range opts.Features {
 			f.Mount(r)
@@ -198,8 +203,9 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 	})
 }
 
-// mountMe adds the routes of the caller's own account.
-func mountMe(r chi.Router, me *handler.Me) {
+// mountMe adds the routes of the caller's own account; exportLimit is the
+// budget of the data export.
+func mountMe(r chi.Router, me *handler.Me, exportLimit func(http.Handler) http.Handler) {
 	r.Get("/me", me.Get)
 	r.Patch("/me", me.Update)
 	r.Delete("/me", me.Delete)
@@ -209,6 +215,7 @@ func mountMe(r chi.Router, me *handler.Me) {
 	r.Get("/me/sessions", me.ListSessions)
 	r.Delete("/me/sessions", me.RevokeOtherSessions)
 	r.Delete("/me/sessions/{id}", me.RevokeSession)
+	r.With(exportLimit).Post("/me/export", me.Export)
 }
 
 func serveOpenAPI(w http.ResponseWriter, _ *http.Request) {

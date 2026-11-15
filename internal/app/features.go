@@ -11,6 +11,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/audit"
 	"github.com/NickeAlves/monthra-server/internal/cache"
 	"github.com/NickeAlves/monthra-server/internal/config"
+	"github.com/NickeAlves/monthra-server/internal/dataexport"
 	apihttp "github.com/NickeAlves/monthra-server/internal/http"
 	"github.com/NickeAlves/monthra-server/internal/http/handler"
 	"github.com/NickeAlves/monthra-server/internal/http/middleware"
@@ -29,11 +30,13 @@ import (
 )
 
 // features is what the domain features (accounts, categories, ...) add to
-// the app: their routes, mounted on the authenticated group, and the erasers
-// of their data, run by DELETE /me ahead of the auth ones.
+// the app: their routes, mounted on the authenticated group, the erasers of
+// their data, run by DELETE /me ahead of the auth ones, and the exporters
+// of it, the files of POST /me/export after the profile.
 type features struct {
-	routes  []handler.Routes
-	erasers []authuc.UserDataEraser
+	routes    []handler.Routes
+	erasers   []authuc.UserDataEraser
+	exporters []authuc.UserDataExporter
 	// services write the demo data of make seed through the same rules as
 	// the API.
 	services featureServices
@@ -67,7 +70,8 @@ type featureDeps struct {
 
 // newFeatures wires every domain feature on d.db, the dashboard summaries
 // cached in d.redis. Each one that stores data by user_id registers its
-// eraser (the UserDataEraser contract of CLAUDE.md).
+// eraser and its exporter (the UserDataEraser and UserDataExporter contract
+// of CLAUDE.md).
 func newFeatures(d featureDeps) features {
 	db, logger, metrics := d.db, d.logger, d.metrics
 	accountsStore, categoriesStore := repomongo.NewAccounts(db), repomongo.NewCategories(db)
@@ -148,6 +152,17 @@ func newFeatures(d featureDeps) features {
 			// The summaries cached under the dropped version are never read
 			// again and expire within cache.DefaultSummaryTTL.
 			summaries,
+		},
+		// The files of the export, in the order the API presents the data.
+		// The transactions are read after the occurrences due are created.
+		exporters: []authuc.UserDataExporter{
+			dataexport.AccountsFile(accountsStore),
+			dataexport.CategoriesFile(categoriesStore),
+			dataexport.TransactionsFile(ledger, recurrencesService),
+			dataexport.RecurrencesFile(recurrencesStore),
+			dataexport.BudgetsFile(budgetsStore),
+			dataexport.InvestmentsFile(investmentsStore),
+			dataexport.MovementsFile(investmentsStore, movementsStore),
 		},
 		services: featureServices{
 			accounts: accountsService, categories: categoriesService,

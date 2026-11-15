@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.14.0
+  version: 0.15.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -91,6 +91,10 @@ info:
     - `DELETE /me` erases the account and its data (LGPD). It takes the password and, with
       two-step verification on, a code. Every session stops working at once. The security
       audit trail is kept for its retention period; the address can sign up again.
+    - `POST /me/export` downloads everything the account holds (LGPD access and portability)
+      as a ZIP of JSON files, after the same step-up as `DELETE /me`. Each export is audited
+      (`data_exported`) and emailed to the owner, and has its own budget (5 per hour by
+      default, failed step-ups included).
     - Wrong passwords and codes here answer `403` (`password_incorrect`, `mfa_code_invalid`) and
       count toward the lockout of the address.
 
@@ -352,7 +356,8 @@ info:
     Every `/api/v1` response carries `RateLimit-Limit`, `RateLimit-Remaining` and
     `RateLimit-Reset` (seconds). A spent budget answers `429` (`rate_limited`) with
     `Retry-After` (seconds). On top of the per-user budget, the reports have their own (30
-    per minute by default) and the exports theirs (10 per hour).
+    per minute by default), the exports theirs (10 per hour) and the data export of the
+    account its own (5 per hour).
   license:
     name: Proprietary
 servers:
@@ -366,7 +371,7 @@ tags:
   - name: auth
     description: Authentication and browser session protection
   - name: me
-    description: The caller's own account, preferences, password and sessions
+    description: The caller's own account, preferences, password, sessions, data export and deletion
   - name: accounts
     description: The caller's money accounts (bank, savings, credit card, cash, brokerage)
   - name: categories
@@ -1041,6 +1046,71 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/me/export:
+    post:
+      tags: [me]
+      summary: Export every record of the account (LGPD)
+      description: |
+        Takes the password and, with two-step verification on, a TOTP or recovery code, like
+        `DELETE /me`. The answer is a ZIP archive streamed as the records are read: a failure
+        after it started aborts the response, so an archive that does not finish (and cannot
+        be opened) is incomplete. The occurrences of the recurrences due up to today in UTC are
+        created first. Each export records `data_exported` in the audit trail and emails the
+        owner, with a password reset link in case it was not them.
+
+        The archive holds, in this order (each list a JSON array, one record per line, `[]`
+        when empty; ids, amounts, days and times as the API gives them; no owner id):
+
+        | File | Content |
+        |---|---|
+        | `manifest.json` | `{format: "monthra-data-export", version: 1, exportedAt, userId}` |
+        | `profile.json` | the account, as `GET /me` answers |
+        | `accounts.json` | `Account` records, archived ones included, without `balance` and `projectedBalance` |
+        | `categories.json` | `Category` records, a default one named in the stored language until renamed |
+        | `transactions.json` | every `Transaction`, newest day first |
+        | `recurrences.json` | `Recurrence` records, ended ones included |
+        | `budgets.json` | the budgets of every month, oldest first: `Budget` without `spent`, `scheduled`, `remaining` and `status` |
+        | `investments.json` | `Investment` records without `position` |
+        | `investment-movements.json` | `Movement` records, by investment in the order above, each one's newest first |
+        | `sessions.json` | every stored session (active, expired or signed out until removed) with `revokedAt` |
+        | `audit-log.json` | the security events kept: `{event, sessionId, ip, userAgent, reason, createdAt}`, newest first |
+
+        Never exported: the password hash, the two-step secret and recovery codes, and the
+        refresh and email tokens. Balances, budget usage and positions are left out: they are
+        computed again from the records.
+      operationId: exportMe
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportDataRequest"
+      responses:
+        "200":
+          description: "The archive (`Cache-Control: no-store`), named after today in UTC."
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="monthra-data-YYYY-MM-DD.zip"`'
+              schema:
+                type: string
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -3080,6 +3150,17 @@ components:
           minLength: 10
           maxLength: 1024
     DeleteAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: A TOTP or recovery code; required when two-step verification is on.
+    ExportDataRequest:
       type: object
       additionalProperties: false
       required: [password]

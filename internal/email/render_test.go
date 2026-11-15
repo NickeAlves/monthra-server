@@ -22,7 +22,7 @@ func TestCatalogIsComplete(t *testing.T) {
 	all := []Template{
 		TemplateVerifyEmail, TemplateRegisterAttempt, TemplateResetPassword,
 		TemplatePasswordChanged, TemplateMFAEnabled, TemplateMFADisabled,
-		TemplateAccountDeleted, TemplateBudgetWarning, TemplateBudgetExceeded,
+		TemplateAccountDeleted, TemplateDataExported, TemplateBudgetWarning, TemplateBudgetExceeded,
 	}
 	noAction := map[Template]bool{TemplateAccountDeleted: true}
 	for _, tpl := range all {

@@ -241,6 +241,38 @@ var catalog = map[Template]map[i18n.Locale]copyText{
 			Footer: "If it was not you, someone knew your password: change it on any other service where you use the same one.",
 		},
 	},
+	TemplateDataExported: {
+		i18n.PtBR: {
+			Subject: "Seus dados do Monthra foram exportados",
+			Heading: "Dados exportados",
+			Lines: []string{
+				"Uma cópia de todos os dados da sua conta no Monthra acabou de ser baixada, depois de confirmar a sua senha.",
+				"Se não foi você, redefina a senha agora pelo botão abaixo. Isso encerra todas as sessões abertas.",
+			},
+			Action: "Redefinir senha",
+			Footer: "Se foi você, guarde o arquivo em um lugar seguro: ele tem todo o seu histórico financeiro.",
+		},
+		i18n.EsES: {
+			Subject: "Se exportaron tus datos de Monthra",
+			Heading: "Datos exportados",
+			Lines: []string{
+				"Se acaba de descargar una copia de todos los datos de tu cuenta de Monthra, tras confirmar tu contraseña.",
+				"Si no fuiste tú, restablece la contraseña ahora con el botón de abajo. Eso cierra todas las sesiones abiertas.",
+			},
+			Action: "Restablecer contraseña",
+			Footer: "Si fuiste tú, guarda el archivo en un lugar seguro: tiene todo tu historial financiero.",
+		},
+		i18n.EnUS: {
+			Subject: "Your Monthra data was exported",
+			Heading: "Data exported",
+			Lines: []string{
+				"A copy of all the data of your Monthra account was just downloaded, after your password was confirmed.",
+				"If it was not you, reset your password now with the button below. That signs out every open session.",
+			},
+			Action: "Reset password",
+			Footer: "If it was you, keep the file somewhere safe: it holds your whole financial history.",
+		},
+	},
 	TemplateBudgetWarning: {
 		i18n.PtBR: {
 			Subject: "Um orçamento de {month} está perto do limite",

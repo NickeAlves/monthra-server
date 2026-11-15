@@ -32,6 +32,9 @@ const (
 	// TemplateAccountDeleted confirms that the account and its data were
 	// deleted. It has no call to action: there is no account left to act on.
 	TemplateAccountDeleted Template = "account_deleted"
+	// TemplateDataExported tells the owner that a copy of the account's data
+	// was downloaded (LGPD export), with a reset link in case it was not them.
+	TemplateDataExported Template = "data_exported"
 	// TemplateBudgetWarning tells the owner that spending in a month reached
 	// the warning share of at least one budget. Like every template, it names
 	// no category: a category name is user-chosen text.

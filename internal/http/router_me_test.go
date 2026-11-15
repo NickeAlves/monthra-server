@@ -70,6 +70,9 @@ func (accountStub) RevokeOtherSessions(context.Context, auth.Principal, authuc.C
 func (accountStub) DeleteAccount(context.Context, auth.Principal, authuc.DeleteAccountInput, authuc.Client) error {
 	return nil
 }
+func (accountStub) ExportData(context.Context, auth.Principal, authuc.ExportDataInput, authuc.Client) (authuc.DataExport, error) {
+	return authuc.DataExport{UserID: "u1", At: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)}, nil
+}
 
 type storedLocales map[string]i18n.Locale
 
@@ -103,6 +106,8 @@ func newMeRouter(t *testing.T, features ...handler.Routes) http.Handler {
 		AuthRateByIP:    perMinute,
 		RefreshRateByIP: perMinute,
 		APIRateByUser:   perMinute,
+
+		DataExportRateByUser: perMinute,
 	})
 }
 
@@ -122,6 +127,7 @@ func TestMeRoutesNeedAuthentication(t *testing.T) {
 		{http.MethodDelete, "/api/v1/me/sessions", "", http.StatusNoContent},
 		{http.MethodDelete, "/api/v1/me/sessions/s2", "", http.StatusNoContent},
 		{http.MethodDelete, "/api/v1/me/sessions/s9", "", http.StatusNotFound},
+		{http.MethodPost, "/api/v1/me/export", `{"password":"secret"}`, http.StatusOK},
 	}
 	for _, rt := range routes {
 		w := do(h, rt.method, rt.path, rt.body, jsonHeaders)

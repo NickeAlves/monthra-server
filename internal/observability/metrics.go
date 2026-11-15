@@ -143,7 +143,7 @@ func NewMetrics(version, env string) *Metrics {
 		exports: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "monthra",
 			Name:      "exports_total",
-			Help:      "Data exports started, by dataset (transactions).",
+			Help:      "Data exports started, by dataset (transactions, account).",
 		}, []string{"dataset"}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{

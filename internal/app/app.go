@@ -99,7 +99,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	authn, err := newAuth(cfg, logger, metrics, authDeps{
 		db: db, redis: redisClient, keys: keys,
 		limiter: limiter, mailer: mailer, cookies: cookies,
-		featureErasers: domainFeatures.erasers,
+		featureErasers:   domainFeatures.erasers,
+		featureExporters: domainFeatures.exporters,
 	})
 	if err != nil {
 		return err
@@ -126,14 +127,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		Keys:        keys,
 		APIRateByIP: cfg.RateLimits.APIPerIP,
 
-		Auth:            authn.handler,
-		Authenticator:   authn.authenticator,
-		Me:              authn.me,
-		Features:        domainFeatures.routes,
-		Locales:         authn.locales,
-		AuthRateByIP:    cfg.RateLimits.AuthPerIP,
-		RefreshRateByIP: cfg.RateLimits.RefreshPerIP,
-		APIRateByUser:   cfg.RateLimits.APIPerUser,
+		Auth:                 authn.handler,
+		Authenticator:        authn.authenticator,
+		Me:                   authn.me,
+		Features:             domainFeatures.routes,
+		Locales:              authn.locales,
+		AuthRateByIP:         cfg.RateLimits.AuthPerIP,
+		RefreshRateByIP:      cfg.RateLimits.RefreshPerIP,
+		APIRateByUser:        cfg.RateLimits.APIPerUser,
+		DataExportRateByUser: cfg.RateLimits.DataExportPerUser,
 	})
 
 	api := apihttp.NewServer(cfg.HTTP.Addr, router, cfg.HTTP, logger)
