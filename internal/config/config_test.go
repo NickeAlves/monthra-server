@@ -90,6 +90,7 @@ func TestLoadParsesAuthSettings(t *testing.T) {
 	t.Setenv("APP_PUBLIC_URL", "https://app.monthra.example/")
 	t.Setenv("SMTP_TLS", "TLS")
 	t.Setenv("TURNSTILE_SECRET", rand.Text())
+	t.Setenv("TURNSTILE_HOSTNAMES", " App.Monthra.example , localhost")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -103,6 +104,7 @@ func TestLoadParsesAuthSettings(t *testing.T) {
 	assert.Equal(t, "https://app.monthra.example/verify-email", cfg.Auth.AppPublicURL.Join("/verify-email"))
 	assert.Equal(t, SMTPTLSImplicit, cfg.SMTP.TLS)
 	assert.True(t, cfg.Captcha.Enabled())
+	assert.Equal(t, []string{"app.monthra.example", "localhost"}, cfg.Captcha.HostnameList())
 }
 
 func TestLoadRejectsBadAuthSettings(t *testing.T) {
@@ -134,6 +136,11 @@ func TestLoadRejectsBadAuthSettings(t *testing.T) {
 		"bad smtp from":          {"SMTP_FROM", "not an address", "SMTP_FROM is not a valid address"},
 		"smtp host missing":      {"SMTP_HOST", "", "SMTP_HOST"},
 		"smtp user without pass": {"SMTP_USERNAME", "relay", "SMTP_PASSWORD is required"},
+		"hostname with a scheme": {"TURNSTILE_HOSTNAMES", "https://app.example", "invalid hostname"},
+		"hostname with a port":   {"TURNSTILE_HOSTNAMES", "app.example:443", "invalid hostname"},
+		"hostname with a path":   {"TURNSTILE_HOSTNAMES", "app.example/login", "invalid hostname"},
+		"hostname wildcard":      {"TURNSTILE_HOSTNAMES", "*.example", "invalid hostname"},
+		"hostname empty label":   {"TURNSTILE_HOSTNAMES", "app..example", "invalid hostname"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setRequired(t)
@@ -345,6 +352,42 @@ func TestValidate(t *testing.T) {
 		"insecure opt-in never in production": {
 			mutate:  func(c *Config) { c.AppEnv = EnvProduction; c.SMTP.AllowInsecure = true },
 			wantErr: "SMTP_ALLOW_INSECURE must not be set in production",
+		},
+		"captcha hostnames optional locally": {
+			mutate: func(c *Config) { c.Captcha.TurnstileSecret = Redacted(rand.Text()) },
+		},
+		"captcha hostnames required outside local": {
+			mutate:  func(c *Config) { c.AppEnv = EnvStaging; c.Captcha.TurnstileSecret = Redacted(rand.Text()) },
+			wantErr: "TURNSTILE_HOSTNAMES is required in staging when TURNSTILE_SECRET is set",
+		},
+		"captcha hostnames not needed while the captcha is off": {
+			mutate: func(c *Config) {
+				c.AppEnv = EnvProduction
+				c.Redis.Password = rand.Text()
+				c.Security.AllowedOrigins = []Origin{"https://app.monthra.example"}
+				c.Auth.AppPublicURL = "https://app.monthra.example"
+			},
+		},
+		"captcha with hostnames in production": {
+			mutate: func(c *Config) {
+				c.AppEnv = EnvProduction
+				c.Redis.Password = rand.Text()
+				c.Security.AllowedOrigins = []Origin{"https://app.monthra.example"}
+				c.Auth.AppPublicURL = "https://app.monthra.example"
+				c.Captcha.TurnstileSecret = Redacted(rand.Text())
+				c.Captcha.Hostnames = []Hostname{"app.monthra.example"}
+			},
+		},
+		"captcha testing secret never in production": {
+			mutate: func(c *Config) {
+				c.AppEnv = EnvProduction
+				c.Captcha.TurnstileSecret = "1x0000000000000000000000000000000AA"
+				c.Captcha.Hostnames = []Hostname{"app.monthra.example"}
+			},
+			wantErr: "one of Cloudflare's testing secrets",
+		},
+		"captcha testing secret is fine locally": {
+			mutate: func(c *Config) { c.Captcha.TurnstileSecret = "1x0000000000000000000000000000000AA" },
 		},
 		"smtp credentials never in clear text": {
 			mutate: func(c *Config) {

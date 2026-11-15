@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.15.0
+  version: 0.15.1
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -35,7 +35,8 @@ info:
       get the same `invalid_credentials` answer. After repeated failures the address (or IP)
       is locked for 1 minute, doubling up to 15 (`429 rate_limited` with `Retry-After`). When
       a captcha is enabled, `captcha_required` asks for a Cloudflare Turnstile token in
-      `captchaToken`.
+      `captchaToken`, solved on the widget rendered with `action: login` (sign-up: `register`);
+      a token from another form or host is `captcha_invalid`.
     - Access tokens are EdDSA JWTs valid for 15 minutes. Refresh tokens are opaque, last
       30 days and **rotate on every use**:
       - A refresh token presented again within 10 seconds of its rotation answers
@@ -2924,7 +2925,10 @@ components:
           format: password
         captchaToken:
           type: string
-          description: Turnstile token, when `captcha_required` asked for one.
+          maxLength: 2048
+          description: |
+            Turnstile token, when `captcha_required` asked for one, from a widget rendered with
+            `action: register`. Tokens work once and expire after 300 seconds.
     LoginRequest:
       type: object
       additionalProperties: false
@@ -2938,6 +2942,10 @@ components:
           format: password
         captchaToken:
           type: string
+          maxLength: 2048
+          description: |
+            Turnstile token, when `captcha_required` asked for one, from a widget rendered with
+            `action: login`. Tokens work once and expire after 300 seconds.
     TokenRequest:
       type: object
       additionalProperties: false

@@ -13,6 +13,7 @@ import (
 
 	"github.com/NickeAlves/monthra-server/internal/audit"
 	core "github.com/NickeAlves/monthra-server/internal/auth"
+	"github.com/NickeAlves/monthra-server/internal/captcha"
 	"github.com/NickeAlves/monthra-server/internal/config"
 	"github.com/NickeAlves/monthra-server/internal/crypto/aead"
 	"github.com/NickeAlves/monthra-server/internal/domain"
@@ -637,15 +638,15 @@ func (m *memLimiter) Take(_ context.Context, subject string) (ratelimit.Result, 
 }
 
 type fakeCaptcha struct {
-	enabled bool
-	err     error
-	tokens  []string
+	enabled    bool
+	err        error
+	challenges []captcha.Challenge
 }
 
 func (f *fakeCaptcha) Enabled() bool { return f.enabled }
-func (f *fakeCaptcha) Verify(_ context.Context, token, _ string) (bool, error) {
-	f.tokens = append(f.tokens, token)
-	return token == "human", f.err
+func (f *fakeCaptcha) Verify(_ context.Context, c captcha.Challenge) (bool, error) {
+	f.challenges = append(f.challenges, c)
+	return c.Token == "human", f.err
 }
 
 type fakeBreach struct {

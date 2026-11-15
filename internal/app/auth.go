@@ -92,7 +92,12 @@ func newAuth(cfg config.Config, logger *slog.Logger, metrics *observability.Metr
 	}
 	var verifier captcha.Verifier = captcha.Disabled{}
 	if cfg.Captcha.Enabled() {
-		verifier = captcha.NewTurnstile(cfg.Captcha.TurnstileSecret.Reveal(), captcha.TurnstileURL, nil)
+		verifier = captcha.NewTurnstile(captcha.TurnstileOptions{
+			Secret:    cfg.Captcha.TurnstileSecret.Reveal(),
+			URL:       captcha.TurnstileURL,
+			Hostnames: cfg.Captcha.HostnameList(),
+			Logger:    logger,
+		})
 	}
 	revocations := cache.NewRevocations(d.redis, d.keys)
 	encryptionKeys := map[string][]byte{}

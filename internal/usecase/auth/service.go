@@ -11,6 +11,7 @@ import (
 
 	"github.com/NickeAlves/monthra-server/internal/audit"
 	core "github.com/NickeAlves/monthra-server/internal/auth"
+	"github.com/NickeAlves/monthra-server/internal/captcha"
 	"github.com/NickeAlves/monthra-server/internal/config"
 	"github.com/NickeAlves/monthra-server/internal/domain"
 	"github.com/NickeAlves/monthra-server/internal/email"
@@ -159,7 +160,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, c Client) erro
 			return unavailable(err)
 		}
 		if n > s.o.Lockout.RegisterCaptchaAfter {
-			if err := s.checkCaptcha(ctx, in.CaptchaToken, c); err != nil {
+			if err := s.checkCaptcha(ctx, in.CaptchaToken, captcha.ActionRegister, c); err != nil {
 				return err
 			}
 		}
@@ -269,7 +270,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput, c Client) (LoginResu
 		return LoginResult{}, &RateLimitedError{RetryAfter: state.RetryAfter}
 	}
 	if s.Captcha.Enabled() && s.o.Lockout.NeedsCaptcha(state) {
-		if err := s.checkCaptcha(ctx, in.CaptchaToken, c); err != nil {
+		if err := s.checkCaptcha(ctx, in.CaptchaToken, captcha.ActionLogin, c); err != nil {
 			s.Metrics.Login(resultCaptcha)
 			return LoginResult{}, err
 		}
@@ -535,11 +536,12 @@ func (s *Service) takeMailBudget(ctx context.Context, addr string) error {
 	return nil
 }
 
-func (s *Service) checkCaptcha(ctx context.Context, token string, c Client) error {
+// checkCaptcha verifies a token solved on the widget of action's form.
+func (s *Service) checkCaptcha(ctx context.Context, token, action string, c Client) error {
 	if token == "" {
 		return ErrCaptchaRequired
 	}
-	ok, err := s.Captcha.Verify(ctx, token, c.ip())
+	ok, err := s.Captcha.Verify(ctx, captcha.Challenge{Token: token, Action: action, RemoteIP: c.ip()})
 	if err != nil {
 		return unavailable(err)
 	}

@@ -65,6 +65,24 @@ func ParseOrigin(raw string) (Origin, error) {
 	return Origin(scheme + "://" + host), nil
 }
 
+// Hostname is a lowercase DNS name or IP address, without scheme, port or
+// path: what Turnstile's siteverify reports as `hostname`.
+type Hostname string
+
+// maxHostnameLength is the longest DNS name.
+const maxHostnameLength = 253
+
+// UnmarshalText parses and normalizes a hostname.
+func (h *Hostname) UnmarshalText(text []byte) error {
+	v := strings.ToLower(strings.TrimSpace(string(text)))
+	if v == "" || len(v) > maxHostnameLength || strings.Trim(v, "abcdefghijklmnopqrstuvwxyz0123456789.-") != "" ||
+		strings.HasPrefix(v, ".") || strings.HasSuffix(v, ".") || strings.Contains(v, "..") {
+		return fmt.Errorf("invalid hostname %q: want a bare host name like app.example.com (no scheme, port or path)", string(text))
+	}
+	*h = Hostname(v)
+	return nil
+}
+
 // OriginOf returns the origin of an absolute URL such as a Referer header.
 func OriginOf(rawURL string) (Origin, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
