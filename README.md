@@ -97,7 +97,8 @@ Everything comes from environment variables (see [.env.example](.env.example)); 
 | `PASSWORD_HASH_CONCURRENCY` | `4` | Parallel Argon2id hashes (64 MiB each) |
 | `HIBP_ENABLED` | `true` | Reject new passwords found in Have I Been Pwned (k-anonymity) |
 | `APP_PUBLIC_URL` | `http://localhost:3000` | Web app base URL used in email links; https outside `local` |
-| `TURNSTILE_SECRET` | | Cloudflare Turnstile secret; empty disables the captcha |
+| `TURNSTILE_SECRET` | | Cloudflare Turnstile secret; empty disables the captcha. Cloudflare's testing secrets are refused in `production` |
+| `TURNSTILE_HOSTNAMES` | | Hosts a token may be solved on, comma-separated (the web app's host). Set, the token's `action` must match its form (`login`, `register`) too. Required outside `local` when `TURNSTILE_SECRET` is set; empty locally with the testing keys (their answers carry `example.com` and no action) |
 | `SMTP_HOST`, `SMTP_PORT` | (required), `587` | SMTP relay (Mailpit locally) |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | | Credentials require TLS |
 | `SMTP_FROM` | (required) | `Name <address>` or a bare address |
@@ -119,7 +120,7 @@ The flows and their answers are documented in [docs/openapi.yaml](docs/openapi.y
 
 - **Sign-up** answers `202` whatever the address. A new address gets a verification link and a taken one gets a "someone tried to sign up" email, so the API never tells who has an account. The link puts its token in the URL fragment (`/verify-email#token=…`), so the token stays out of server logs and `Referer` headers. The web app must use Flutter's path URL strategy, so that the fragment stays free for the token.
 - **Passwords:** 10 to 1024 characters with no composition rules, checked against Have I Been Pwned, hashed with Argon2id (m=64 MiB, t=3, p=2). Hashes made with older parameters are upgraded on the next login.
-- **Login** needs a verified email and answers wrong addresses and wrong passwords alike, after the same work. Failures lock the address after 5 tries (and an IP after 20), for 1 minute doubling to 15. With Turnstile on, a captcha is asked after 3 failures, or after 3 sign-ups from one IP within an hour.
+- **Login** needs a verified email and answers wrong addresses and wrong passwords alike, after the same work. Failures lock the address after 5 tries (and an IP after 20), for 1 minute doubling to 15. With Turnstile on, a captcha is asked after 3 failures, or after 3 sign-ups from one IP within an hour. The token is checked before the password, with siteverify; with `TURNSTILE_HOSTNAMES` set it must also come from one of those hosts and from the widget of the same form (`action` `login` or `register`), so a token solved on another site or form is `captcha_invalid`.
 - **Tokens:**
   - Access tokens are EdDSA JWTs (15 minutes, `kid` for rotation). The `iss` claim is `monthra-server:{env}`, so a staging token is never accepted in production.
   - Refresh tokens are opaque, stored as SHA-256 in MongoDB (`refresh_tokens`, one chain per session in `sessions`), and rotate on every use. A rotated token presented again within the grace window answers `409` (two tabs refreshing together); later, it revokes the whole session.
