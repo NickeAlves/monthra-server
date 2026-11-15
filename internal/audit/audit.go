@@ -32,6 +32,9 @@ const (
 	EventSessionRevoked       Event = "session_revoked"
 	EventSessionsRevoked      Event = "sessions_revoked"
 	EventAccountDeleted       Event = "account_deleted"
+	// EventTransactionsExported is an export of transactions (§5.3); its
+	// reason is the format.
+	EventTransactionsExported Event = "transactions_exported"
 )
 
 // maxUserAgent bounds the stored user agent.

@@ -40,6 +40,8 @@ type Metrics struct {
 
 	budgetAlerts      *prometheus.CounterVec
 	budgetAlertErrors prometheus.Counter
+
+	exports *prometheus.CounterVec
 }
 
 // NewMetrics creates a dedicated registry with Go runtime, process and build info collectors.
@@ -138,6 +140,11 @@ func NewMetrics(version, env string) *Metrics {
 			Name:      "budget_alert_errors_total",
 			Help:      "Budget alert checks that failed after a write (the write went on; the alert waits for the next check).",
 		}),
+		exports: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "monthra",
+			Name:      "exports_total",
+			Help:      "Data exports started, by dataset (transactions).",
+		}, []string{"dataset"}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "monthra",
@@ -154,6 +161,7 @@ func NewMetrics(version, env string) *Metrics {
 		m.rateLimited, m.rateLimitErrors, m.csrfRejected,
 		m.authLogins, m.refreshReuse, m.passwordResets, m.mfaEvents, m.emailSent, m.emailDropped,
 		m.transactionsCreated, m.movementsCreated, m.cacheRequests, m.cacheErrors, m.budgetAlerts, m.budgetAlertErrors,
+		m.exports,
 	)
 	return m
 }
@@ -228,6 +236,9 @@ func (m *Metrics) BudgetAlert(level, result string) {
 
 // BudgetAlertError counts one failed budget alert check.
 func (m *Metrics) BudgetAlertError() { m.budgetAlertErrors.Inc() }
+
+// Exported counts one data export started, by dataset.
+func (m *Metrics) Exported(dataset string) { m.exports.WithLabelValues(dataset).Inc() }
 
 // Handler serves the registry in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {

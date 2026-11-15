@@ -3,14 +3,19 @@ package app
 import (
 	"context"
 	"log/slog"
+	"net/http"
 
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/NickeAlves/monthra-server/internal/audit"
 	"github.com/NickeAlves/monthra-server/internal/cache"
 	"github.com/NickeAlves/monthra-server/internal/config"
+	apihttp "github.com/NickeAlves/monthra-server/internal/http"
 	"github.com/NickeAlves/monthra-server/internal/http/handler"
+	"github.com/NickeAlves/monthra-server/internal/http/middleware"
 	"github.com/NickeAlves/monthra-server/internal/observability"
+	"github.com/NickeAlves/monthra-server/internal/ratelimit"
 	repomongo "github.com/NickeAlves/monthra-server/internal/repository/mongo"
 	"github.com/NickeAlves/monthra-server/internal/usecase/accounts"
 	authuc "github.com/NickeAlves/monthra-server/internal/usecase/auth"
@@ -19,6 +24,7 @@ import (
 	"github.com/NickeAlves/monthra-server/internal/usecase/dashboard"
 	"github.com/NickeAlves/monthra-server/internal/usecase/investments"
 	"github.com/NickeAlves/monthra-server/internal/usecase/recurrences"
+	"github.com/NickeAlves/monthra-server/internal/usecase/reports"
 	"github.com/NickeAlves/monthra-server/internal/usecase/transactions"
 )
 
@@ -53,6 +59,10 @@ type featureDeps struct {
 	// mailer sends the budget alerts, with links to appURL.
 	mailer budgets.Mailer
 	appURL config.PublicURL
+	// limiter enforces the budgets of the reports (§6.4), by user; nil
+	// leaves them out (make seed serves no request).
+	limiter ratelimit.Limiter
+	rates   config.RateLimits
 }
 
 // newFeatures wires every domain feature on d.db, the dashboard summaries
@@ -99,6 +109,16 @@ func newFeatures(d featureDeps) features {
 	budgetsService := budgets.NewService(budgetsStore, users, categoriesStore, ledger, recurrencesService, budgets.Options{})
 	investmentsService := investments.NewService(investmentsStore, movementsStore, accountsStore, categoriesStore,
 		investments.Options{AfterWrite: hooks, Metrics: metrics})
+	// The reports count as the dashboard does (the recurrences' occurrences
+	// first, the investments' income as income) and audit the exports.
+	reportsService := reports.NewService(accountsStore, categoriesStore, ledger, recurrencesService, reports.Options{
+		Investments: movementsStore, Auditor: audit.NewRecorder(repomongo.NewAuditLogs(db), logger), Metrics: metrics,
+	})
+	reportsHandler := &handler.Reports{Service: reportsService, Logger: logger}
+	if d.limiter != nil {
+		reportsHandler.SummaryLimit = d.userLimit(apihttp.PolicyReportsByUser, d.rates.ReportsPerUser)
+		reportsHandler.ExportLimit = d.userLimit(apihttp.PolicyExportByUser, d.rates.ExportPerUser)
+	}
 	return features{
 		routes: []handler.Routes{
 			&handler.Accounts{Service: accountsService, Logger: logger},
@@ -108,6 +128,7 @@ func newFeatures(d featureDeps) features {
 			&handler.Dashboard{Service: dashboardService, Logger: logger},
 			&handler.Budgets{Service: budgetsService, Logger: logger},
 			&handler.Investments{Service: investmentsService, Logger: logger},
+			reportsHandler,
 		},
 		// Recurrences first, so no read during the deletion creates
 		// occurrences again; then transactions: a deletion interrupted
@@ -134,6 +155,19 @@ func newFeatures(d featureDeps) features {
 			investments: investmentsService,
 		},
 	}
+}
+
+// userLimit is the budget of policy name at rate, by user. It fails open,
+// like the per-user budget it adds to.
+func (d featureDeps) userLimit(name string, rate config.Rate) func(http.Handler) http.Handler {
+	return middleware.RateLimit(middleware.RateLimitOptions{
+		Limiter: d.limiter,
+		Keys:    d.keys,
+		Policy:  ratelimit.Policy{Name: name, Rate: rate, FailOpen: true},
+		Subject: middleware.ByUser,
+		Logger:  d.logger,
+		Metrics: d.metrics,
+	})
 }
 
 // writeHooks run, in order, after every write attempt to a user's finance

@@ -185,46 +185,8 @@ type TransactionQuery struct {
 // invalid parameter. Empty parameters are ignored.
 func ParseTransactionQuery(q url.Values) (TransactionQuery, error) {
 	var v domain.Validation
-	var out TransactionQuery
+	out := TransactionQuery{Filter: parseTransactionFilter(&v, q)}
 	var err error
-	if raw := q.Get("from"); raw != "" {
-		out.Filter.From, err = domain.ParseDate(raw)
-		v.Check("from", err)
-	}
-	if raw := q.Get("to"); raw != "" {
-		out.Filter.To, err = domain.ParseDate(raw)
-		v.Check("to", err)
-	}
-	if !out.Filter.From.IsZero() && !out.Filter.To.IsZero() && out.Filter.To.Before(out.Filter.From) {
-		v.Add("to", domain.CodeInvalid)
-	}
-	out.Filter.AccountID = q.Get("accountId")
-	out.Filter.CategoryID = q.Get("categoryId")
-	if raw := q.Get("kind"); raw != "" {
-		kind, ok := domain.ParseTransactionKind(raw)
-		if !ok {
-			v.Add("kind", domain.CodeInvalid)
-		}
-		out.Filter.Kind = kind
-	}
-	if raw := q.Get("tag"); raw != "" {
-		out.Filter.Tag, err = domain.NormalizeTag(raw)
-		v.Check("tag", err)
-	}
-	if raw := q.Get("q"); raw != "" {
-		out.Filter.Search, err = domain.NormalizeSearch(raw)
-		v.Check("q", err)
-	}
-	if raw := q.Get("invoice"); raw != "" {
-		out.Filter.Invoice, err = domain.ParseMonth(raw)
-		v.Check("invoice", err)
-		// An invoice belongs to one card.
-		if out.Filter.AccountID == "" {
-			v.Add("accountId", domain.CodeRequired)
-		}
-	}
-	out.Filter.InstallmentGroupID = q.Get("installmentGroupId")
-	out.Filter.RecurrenceID = q.Get("recurrenceId")
 	if raw := q.Get("asOf"); raw != "" {
 		out.AsOf, err = domain.ParseDate(raw)
 		v.Check("asOf", err)
@@ -241,6 +203,52 @@ func ParseTransactionQuery(q url.Values) (TransactionQuery, error) {
 		return TransactionQuery{}, err
 	}
 	return out, nil
+}
+
+// parseTransactionFilter reads the filters of the transactions (the list's
+// and the export's), adding each invalid one to v.
+func parseTransactionFilter(v *domain.Validation, q url.Values) domain.TransactionFilter {
+	var f domain.TransactionFilter
+	var err error
+	if raw := q.Get("from"); raw != "" {
+		f.From, err = domain.ParseDate(raw)
+		v.Check("from", err)
+	}
+	if raw := q.Get("to"); raw != "" {
+		f.To, err = domain.ParseDate(raw)
+		v.Check("to", err)
+	}
+	if !f.From.IsZero() && !f.To.IsZero() && f.To.Before(f.From) {
+		v.Add("to", domain.CodeInvalid)
+	}
+	f.AccountID = q.Get("accountId")
+	f.CategoryID = q.Get("categoryId")
+	if raw := q.Get("kind"); raw != "" {
+		kind, ok := domain.ParseTransactionKind(raw)
+		if !ok {
+			v.Add("kind", domain.CodeInvalid)
+		}
+		f.Kind = kind
+	}
+	if raw := q.Get("tag"); raw != "" {
+		f.Tag, err = domain.NormalizeTag(raw)
+		v.Check("tag", err)
+	}
+	if raw := q.Get("q"); raw != "" {
+		f.Search, err = domain.NormalizeSearch(raw)
+		v.Check("q", err)
+	}
+	if raw := q.Get("invoice"); raw != "" {
+		f.Invoice, err = domain.ParseMonth(raw)
+		v.Check("invoice", err)
+		// An invoice belongs to one card.
+		if f.AccountID == "" {
+			v.Add("accountId", domain.CodeRequired)
+		}
+	}
+	f.InstallmentGroupID = q.Get("installmentGroupId")
+	f.RecurrenceID = q.Get("recurrenceId")
+	return f
 }
 
 // cursorID is what an id in a cursor may look like; ids are opaque to
