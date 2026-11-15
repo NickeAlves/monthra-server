@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,10 +172,45 @@ type SMTP struct {
 // the challenge.
 type Captcha struct {
 	TurnstileSecret Redacted `env:"TURNSTILE_SECRET"`
+	// Hostnames are the pages a token may be solved on (the web app's host,
+	// which also serves the page the mobile webview loads). With them set, a
+	// token must also come from the widget of the same form (its action).
+	Hostnames []Hostname `env:"TURNSTILE_HOSTNAMES"`
 }
 
 // Enabled reports whether a captcha is verified after repeated failures.
 func (c Captcha) Enabled() bool { return c.TurnstileSecret != "" }
+
+// HostnameList returns the hostnames as plain strings.
+func (c Captcha) HostnameList() []string {
+	out := make([]string, len(c.Hostnames))
+	for i, h := range c.Hostnames {
+		out[i] = string(h)
+	}
+	return out
+}
+
+// turnstileTestSecrets are Cloudflare's documented testing secrets: they
+// accept the dummy token any client can send.
+var turnstileTestSecrets = []Redacted{
+	"1x0000000000000000000000000000000AA",
+	"2x0000000000000000000000000000000AA",
+	"3x0000000000000000000000000000000AA",
+}
+
+func (c Captcha) validate(appEnv Env) []error {
+	if !c.Enabled() {
+		return nil
+	}
+	var errs []error
+	if !appEnv.IsLocal() && len(c.Hostnames) == 0 {
+		errs = append(errs, fmt.Errorf("TURNSTILE_HOSTNAMES is required in %s when TURNSTILE_SECRET is set", appEnv))
+	}
+	if appEnv == EnvProduction && slices.Contains(turnstileTestSecrets, c.TurnstileSecret) {
+		errs = append(errs, errors.New("TURNSTILE_SECRET is one of Cloudflare's testing secrets, which accept a dummy token: never in production"))
+	}
+	return errs
+}
 
 // Issuer is the iss claim of access tokens. It differs per environment, so a
 // staging token is never accepted in production even if keys leaked across.
@@ -250,6 +286,7 @@ func (c Config) Validate() error {
 	errs = append(errs, c.Auth.validate(c.AppEnv)...)
 	errs = append(errs, c.Encryption.validate(c.Security, c.Auth)...)
 	errs = append(errs, c.SMTP.validate(c.AppEnv)...)
+	errs = append(errs, c.Captcha.validate(c.AppEnv)...)
 	return errors.Join(errs...)
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/NickeAlves/monthra-server/internal/audit"
 	core "github.com/NickeAlves/monthra-server/internal/auth"
+	"github.com/NickeAlves/monthra-server/internal/captcha"
 	"github.com/NickeAlves/monthra-server/internal/domain"
 	"github.com/NickeAlves/monthra-server/internal/email"
 	"github.com/NickeAlves/monthra-server/internal/i18n"
@@ -155,6 +156,10 @@ func TestRegisterAsksForACaptchaAfterRepeatedSignUps(t *testing.T) {
 	assert.ErrorIs(t, h.Register(ctx, in, client), ErrCaptchaInvalid)
 	in.CaptchaToken = "human"
 	assert.NoError(t, h.Register(ctx, in, client))
+	require.NotEmpty(t, h.captcha.challenges)
+	for _, c := range h.captcha.challenges {
+		assert.Equal(t, captcha.ActionRegister, c.Action, "a sign-up token must come from the sign-up form")
+	}
 
 	h.captcha.err = errDown
 	in.Email = "e@example.com"
@@ -339,6 +344,10 @@ func TestLoginAsksForACaptchaAfterFailures(t *testing.T) {
 	_, err = h.Login(ctx, LoginInput{Email: "ana@example.com", Password: password, CaptchaToken: "human"}, client)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, h.metrics.logins["captcha"])
+	require.Len(t, h.captcha.challenges, 2, "an empty token never reaches the verifier")
+	for _, c := range h.captcha.challenges {
+		assert.Equal(t, captcha.ActionLogin, c.Action, "a sign-in token must come from the sign-in form")
+	}
 }
 
 func TestLoginUpgradesOutdatedHashes(t *testing.T) {
