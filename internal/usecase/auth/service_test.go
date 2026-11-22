@@ -461,13 +461,18 @@ func TestRefreshReuseRevokesTheSession(t *testing.T) {
 }
 
 func countEvents(a *auditTrail, event audit.Event) int {
-	n := 0
+	return len(eventsOf(a, event))
+}
+
+// eventsOf returns the entries of one event, oldest first.
+func eventsOf(a *auditTrail, event audit.Event) []audit.Entry {
+	var out []audit.Entry
 	for _, e := range a.entries {
 		if e.Event == event {
-			n++
+			out = append(out, e)
 		}
 	}
-	return n
+	return out
 }
 
 func TestRefreshReuseOfAMissingSession(t *testing.T) {

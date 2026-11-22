@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Monthra API
-  version: 0.15.1
+  version: 0.16.0
   description: |
     Personal finance API: expenses, income, investments and Open Finance connections.
 
@@ -66,6 +66,8 @@ info:
       - Each code works once: wait for the next one rather than reusing it. Wrong codes count
         toward the lockout of the address, like wrong passwords.
       - `POST /api/v1/auth/mfa/disable` takes the password and a code.
+      - `POST /api/v1/auth/mfa/recovery-codes` takes the password and a code too, and answers
+        10 new recovery codes (**shown only once**); the old ones stop working.
       - A wrong password or code on these routes answers `403` (`password_incorrect`,
         `mfa_code_invalid`), never `401`: the session is still valid.
     - **Browsers** (requests with an `Origin` header) get the tokens only as `HttpOnly`,
@@ -736,6 +738,43 @@ paths:
       responses:
         "204":
           description: Off; the secret and the recovery codes are deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MFAForbidden"
+        "409":
+          $ref: "#/components/responses/MFAConflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/mfa/recovery-codes:
+    post:
+      tags: [auth]
+      summary: Replace the recovery codes
+      description: |
+        Takes the password and a current TOTP or recovery code, then replaces every recovery
+        code with 10 new ones and emails a notice. A recovery code sent as the code is spent
+        with the rest.
+      operationId: regenerateRecoveryCodes
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFARecoveryCodesRequest"
+      responses:
+        "200":
+          description: "The new codes, shown only this once (`Cache-Control: no-store`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodes"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2784,8 +2823,8 @@ components:
             $ref: "#/components/schemas/Problem"
     MFAConflict:
       description: |
-        `mfa_already_enabled` (setup or enable while on), `mfa_not_enabled` (disable while
-        off) or `mfa_setup_required` (no setup to confirm, or it expired).
+        `mfa_already_enabled` (setup or enable while on), `mfa_not_enabled` (disable or new
+        recovery codes while off) or `mfa_setup_required` (no setup to confirm, or it expired).
       content:
         application/problem+json:
           schema:
@@ -3040,6 +3079,17 @@ components:
             type: string
             examples: ["abcd-efgh-ijkl-mnop"]
     MFADisableRequest:
+      type: object
+      additionalProperties: false
+      required: [password, code]
+      properties:
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: A TOTP code or a recovery code.
+    MFARecoveryCodesRequest:
       type: object
       additionalProperties: false
       required: [password, code]

@@ -171,6 +171,12 @@ func (m *memUsers) DisableMFA(_ context.Context, id string, _ time.Time) (bool, 
 	return m.update(id, func(u domain.User) bool { return u.MFAEnabled() }, func(u *domain.User) { u.MFA = domain.MFA{} })
 }
 
+func (m *memUsers) ReplaceRecoveryCodes(_ context.Context, id string, hashes []string, _ time.Time) (bool, error) {
+	return m.update(id, func(u domain.User) bool { return u.MFAEnabled() }, func(u *domain.User) {
+		u.MFA.RecoveryCodes = append([]string(nil), hashes...)
+	})
+}
+
 func (m *memUsers) MarkEmailVerified(_ context.Context, id string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

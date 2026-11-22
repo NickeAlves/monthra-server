@@ -194,6 +194,7 @@ func mountAuth(api chi.Router, opts RouterOptions) {
 		r.Post("/auth/mfa/setup", opts.Auth.SetupMFA)
 		r.Post("/auth/mfa/enable", opts.Auth.EnableMFA)
 		r.Post("/auth/mfa/disable", opts.Auth.DisableMFA)
+		r.Post("/auth/mfa/recovery-codes", opts.Auth.RegenerateRecoveryCodes)
 		if opts.Me != nil {
 			mountMe(r, opts.Me, limit(PolicyDataExportByUser, opts.DataExportRateByUser, middleware.ByUser, true))
 		}

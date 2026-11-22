@@ -326,6 +326,82 @@ func TestDisableMFAWithATOTPCode(t *testing.T) {
 	assert.False(t, h.users.only().MFAEnabled())
 }
 
+func TestRegenerateRecoveryCodes(t *testing.T) {
+	h := newHarness()
+	secret, old := h.mfaUser(t)
+	p := h.principal()
+	in := func(code string) RegenerateRecoveryCodesInput {
+		return RegenerateRecoveryCodesInput{Password: password, Code: code}
+	}
+
+	_, err := h.RegenerateRecoveryCodes(ctx, p, RegenerateRecoveryCodesInput{Password: "wrong password!", Code: codeAt(t, secret, h.clock.now())}, client)
+	assert.ErrorIs(t, err, ErrPasswordIncorrect)
+	_, err = h.RegenerateRecoveryCodes(ctx, p, in("000000"), client)
+	assert.ErrorIs(t, err, ErrMFACodeInvalid)
+	_, err = h.RegenerateRecoveryCodes(ctx, p, in(""), client)
+	assert.ErrorIs(t, err, ErrMFACodeInvalid, "a missing code is refused")
+	assert.Equal(t, 2, h.lockout.fails["e:"+core.HashIdentifier("email", "ana@example.com")], "the wrong password and code count, the missing code does not")
+	stored := h.users.only().MFA.RecoveryCodes
+	require.Len(t, stored, core.RecoveryCodeCount, "nothing changes on a refusal")
+
+	codes, err := h.RegenerateRecoveryCodes(ctx, p, in(old[0]), client)
+	require.NoError(t, err, "a recovery code works as the second factor")
+	require.Len(t, codes, core.RecoveryCodeCount)
+	for _, c := range codes {
+		assert.NotContains(t, old, c)
+	}
+	got := h.users.only()
+	assert.True(t, got.MFAEnabled())
+	assert.Len(t, got.MFA.RecoveryCodes, core.RecoveryCodeCount)
+	for _, hash := range got.MFA.RecoveryCodes {
+		assert.NotContains(t, stored, hash, "every old code is replaced")
+		assert.NotContains(t, codes, hash, "stored as hashes")
+	}
+	entries := eventsOf(h.audit, audit.EventMFARecoveryCodesRegenerated)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "recovery_code", entries[0].Reason)
+	assert.Equal(t, 1, h.metrics.mfa["recovery_codes_regenerated"])
+	notice := h.mail.sent[len(h.mail.sent)-1]
+	assert.Equal(t, email.TemplateMFARecoveryCodesRegenerated, notice.Template)
+	assert.Equal(t, "ana@example.com", notice.To)
+
+	_, err = h.VerifyMFA(ctx, VerifyMFAInput{Token: h.challenge(t), Code: old[1]}, client)
+	assert.ErrorIs(t, err, ErrMFACodeInvalid, "an old code no longer signs in")
+	_, err = h.VerifyMFA(ctx, VerifyMFAInput{Token: h.challenge(t), Code: codes[0]}, client)
+	require.NoError(t, err, "a new one does")
+
+	h.clock.advance(30 * time.Second)
+	latest, err := h.RegenerateRecoveryCodes(ctx, p, in(codeAt(t, secret, h.clock.now())), client)
+	require.NoError(t, err, "a TOTP code works too")
+	entries = eventsOf(h.audit, audit.EventMFARecoveryCodesRegenerated)
+	assert.Equal(t, "totp", entries[len(entries)-1].Reason)
+	assert.ErrorIs(t, h.DisableMFA(ctx, p, DisableMFAInput{Password: password, Code: codes[1]}, client), ErrMFACodeInvalid,
+		"each regeneration replaces the set before it")
+
+	require.NoError(t, h.DisableMFA(ctx, p, DisableMFAInput{Password: password, Code: latest[0]}, client))
+	_, err = h.RegenerateRecoveryCodes(ctx, p, in(latest[1]), client)
+	assert.ErrorIs(t, err, ErrMFANotEnabled)
+}
+
+func TestRegenerateRecoveryCodesReportsStoreFailures(t *testing.T) {
+	h := newHarness()
+	secret, _ := h.mfaUser(t)
+	h.lockout.err = errDown
+	_, err := h.RegenerateRecoveryCodes(ctx, h.principal(), RegenerateRecoveryCodesInput{Password: password, Code: codeAt(t, secret, h.clock.now())}, client)
+	assert.ErrorIs(t, err, ErrUnavailable)
+
+	h = newHarness()
+	h.mfaUser(t)
+	p := h.principal()
+	h.users.err = errDown
+	_, err = h.RegenerateRecoveryCodes(ctx, p, RegenerateRecoveryCodesInput{}, client)
+	assert.ErrorIs(t, err, errDown)
+
+	h = newHarness()
+	_, err = h.RegenerateRecoveryCodes(ctx, core.Principal{UserID: "gone"}, RegenerateRecoveryCodesInput{}, client)
+	assert.ErrorIs(t, err, ErrUnauthorized)
+}
+
 func TestMFASecretsAreResealedAfterAKeyRotation(t *testing.T) {
 	h := newHarness()
 	secret, _ := h.mfaUser(t)

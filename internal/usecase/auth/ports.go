@@ -35,6 +35,8 @@ type Users interface {
 	UseRecoveryCode(ctx context.Context, id, hash string) (bool, error)
 	ReplaceMFASecret(ctx context.Context, id, oldSealed, newSealed string) (bool, error)
 	DisableMFA(ctx context.Context, id string, at time.Time) (bool, error)
+	// ReplaceRecoveryCodes swaps every recovery code hash for hashes.
+	ReplaceRecoveryCodes(ctx context.Context, id string, hashes []string, at time.Time) (bool, error)
 
 	// Delete removes the account; an account already gone is not an error.
 	Delete(ctx context.Context, id string) error

@@ -89,13 +89,20 @@ type MFAEnableRequest struct {
 	Code string `json:"code" validate:"required,max=64"`
 }
 
-// MFAEnableResponse carries the recovery codes, shown once.
-type MFAEnableResponse struct {
+// RecoveryCodesResponse carries new recovery codes, shown once (POST
+// /auth/mfa/enable and /auth/mfa/recovery-codes).
+type RecoveryCodesResponse struct {
 	RecoveryCodes []string `json:"recoveryCodes"`
 }
 
 // MFADisableRequest is the body of POST /auth/mfa/disable.
 type MFADisableRequest struct {
+	Password string `json:"password" validate:"required,max=4096"`
+	Code     string `json:"code" validate:"required,max=64"`
+}
+
+// MFARecoveryCodesRequest is the body of POST /auth/mfa/recovery-codes.
+type MFARecoveryCodesRequest struct {
 	Password string `json:"password" validate:"required,max=4096"`
 	Code     string `json:"code" validate:"required,max=64"`
 }

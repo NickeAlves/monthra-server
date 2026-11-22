@@ -29,6 +29,9 @@ const (
 	TemplateMFAEnabled Template = "mfa_enabled"
 	// TemplateMFADisabled tells the owner that two-step verification was turned off.
 	TemplateMFADisabled Template = "mfa_disabled"
+	// TemplateMFARecoveryCodesRegenerated tells the owner that a new set of
+	// recovery codes replaced the old one.
+	TemplateMFARecoveryCodesRegenerated Template = "mfa_recovery_codes_regenerated"
 	// TemplateAccountDeleted confirms that the account and its data were
 	// deleted. It has no call to action: there is no account left to act on.
 	TemplateAccountDeleted Template = "account_deleted"
