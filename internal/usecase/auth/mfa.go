@@ -143,17 +143,9 @@ func (s *Service) DisableMFA(ctx context.Context, p core.Principal, in DisableMF
 	if !u.MFAEnabled() {
 		return ErrMFANotEnabled
 	}
-	if err := s.reauthenticate(ctx, u, in.Password, c); err != nil {
-		return err
-	}
-	emailKey := core.HashIdentifier("email", u.Email)
-	factor, reason, err := s.checkSecondFactor(ctx, u, in.Code)
+	factor, err := s.stepUp(ctx, u, in.Password, in.Code, c)
 	if err != nil {
 		return err
-	}
-	if factor == "" {
-		s.secondFactorFailed(ctx, u.ID, emailKey, c, reason)
-		return ErrMFACodeInvalid
 	}
 	ok, err := s.Users.DisableMFA(ctx, u.ID, s.o.Now())
 	if err != nil {

@@ -169,9 +169,10 @@ func (s *Service) DeleteAccount(ctx context.Context, p core.Principal, in Delete
 
 // stepUp asks the caller for the password again and, when MFA is on, for a
 // current code (TOTP or recovery), before an action a stolen session alone
-// must not take (deleting or exporting the account). It returns how the
-// second factor was checked ("" with MFA off). Wrong passwords and codes
-// count toward the login lockout of the address; a missing code is no guess.
+// must not take (deleting or exporting the account, turning MFA off). It
+// returns how the second factor was checked ("" with MFA off). Wrong
+// passwords and codes count toward the login lockout of the address; a
+// missing code is no guess.
 func (s *Service) stepUp(ctx context.Context, u domain.User, password, code string, c Client) (factor string, err error) {
 	if err := s.reauthenticate(ctx, u, password, c); err != nil {
 		return "", err
