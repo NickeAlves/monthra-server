@@ -29,6 +29,7 @@ type AuthService interface {
 	SetupMFA(ctx context.Context, p auth.Principal, password string, c authuc.Client) (authuc.MFASetup, error)
 	EnableMFA(ctx context.Context, p auth.Principal, code string, c authuc.Client) ([]string, error)
 	DisableMFA(ctx context.Context, p auth.Principal, in authuc.DisableMFAInput, c authuc.Client) error
+	RegenerateRecoveryCodes(ctx context.Context, p auth.Principal, in authuc.RegenerateRecoveryCodesInput, c authuc.Client) ([]string, error)
 	Refresh(ctx context.Context, token string, c authuc.Client) (authuc.Tokens, error)
 	Logout(ctx context.Context, p auth.Principal, c authuc.Client) error
 }
@@ -190,7 +191,7 @@ func (h *Auth) EnableMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, dto.MFAEnableResponse{RecoveryCodes: codes})
+	writeJSON(w, http.StatusOK, dto.RecoveryCodesResponse{RecoveryCodes: codes})
 }
 
 // DisableMFA handles POST /auth/mfa/disable (authenticated).
@@ -208,6 +209,27 @@ func (h *Auth) DisableMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noContent(w, http.StatusNoContent)
+}
+
+// RegenerateRecoveryCodes handles POST /auth/mfa/recovery-codes
+// (authenticated).
+func (h *Auth) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req dto.MFARecoveryCodesRequest
+	if !h.decode(w, r, &req) {
+		return
+	}
+	in := authuc.RegenerateRecoveryCodesInput{Password: req.Password, Code: req.Code}
+	codes, err := h.Service.RegenerateRecoveryCodes(r.Context(), p, in, client(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, dto.RecoveryCodesResponse{RecoveryCodes: codes})
 }
 
 // principal returns the caller set by middleware.Authenticate, or answers 401.

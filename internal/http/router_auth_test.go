@@ -45,6 +45,9 @@ func (okAuth) EnableMFA(context.Context, auth.Principal, string, authuc.Client) 
 func (okAuth) DisableMFA(context.Context, auth.Principal, authuc.DisableMFAInput, authuc.Client) error {
 	return nil
 }
+func (okAuth) RegenerateRecoveryCodes(context.Context, auth.Principal, authuc.RegenerateRecoveryCodesInput, authuc.Client) ([]string, error) {
+	return nil, nil
+}
 func (okAuth) Refresh(context.Context, string, authuc.Client) (authuc.Tokens, error) {
 	return authuc.Tokens{}, nil
 }
@@ -106,6 +109,7 @@ func TestAuthRoutesAreMounted(t *testing.T) {
 		"/api/v1/auth/mfa/setup":           {`{"password":"c"}`, http.StatusUnauthorized},
 		"/api/v1/auth/mfa/enable":          {`{"code":"c"}`, http.StatusUnauthorized},
 		"/api/v1/auth/mfa/disable":         {`{"password":"c","code":"c"}`, http.StatusUnauthorized},
+		"/api/v1/auth/mfa/recovery-codes":  {`{"password":"c","code":"c"}`, http.StatusUnauthorized},
 		"/api/v1/auth/refresh":             {`{"refreshToken":"r"}`, http.StatusOK},
 		"/api/v1/auth/logout":              {``, http.StatusUnauthorized},
 	} {

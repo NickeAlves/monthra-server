@@ -405,6 +405,17 @@ func (r *Users) DisableMFA(ctx context.Context, id string, at time.Time) (bool, 
 	})
 }
 
+// ReplaceRecoveryCodes swaps every recovery code hash for hashes. It
+// reports false when MFA was not enabled.
+func (r *Users) ReplaceRecoveryCodes(ctx context.Context, id string, hashes []string, at time.Time) (bool, error) {
+	return r.updateMFA(ctx, id, bson.D{mfaEnabled}, bson.D{
+		{Key: "$set", Value: bson.D{
+			{Key: "mfa.recovery_codes", Value: hashes},
+			{Key: "updated_at", Value: at.UTC()},
+		}},
+	})
+}
+
 // updateMFA applies update to the user id when it also matches cond, and
 // reports whether it did.
 func (r *Users) updateMFA(ctx context.Context, id string, cond, update bson.D) (bool, error) {

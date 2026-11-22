@@ -212,6 +212,41 @@ var catalog = map[Template]map[i18n.Locale]copyText{
 			Footer: "If it was you, there is nothing else to do.",
 		},
 	},
+	TemplateMFARecoveryCodesRegenerated: {
+		i18n.PtBR: {
+			Subject: "Novos códigos de recuperação no Monthra",
+			Heading: "Novos códigos de recuperação",
+			Lines: []string{
+				"Novos códigos de recuperação foram gerados para a verificação em duas etapas da sua conta no Monthra. Os códigos antigos deixaram de valer.",
+				"Guarde os novos em um lugar seguro: eles são a única forma de entrar se você perder o app autenticador.",
+				"Se não foi você, redefina a senha agora pelo botão abaixo. Isso encerra todas as sessões abertas.",
+			},
+			Action: "Redefinir senha",
+			Footer: "Se foi você, não precisa fazer mais nada.",
+		},
+		i18n.EsES: {
+			Subject: "Nuevos códigos de recuperación en Monthra",
+			Heading: "Nuevos códigos de recuperación",
+			Lines: []string{
+				"Se generaron nuevos códigos de recuperación para la verificación en dos pasos de tu cuenta de Monthra. Los códigos anteriores dejaron de funcionar.",
+				"Guarda los nuevos en un lugar seguro: son la única forma de entrar si pierdes la app de autenticación.",
+				"Si no fuiste tú, restablece la contraseña ahora con el botón de abajo. Eso cierra todas las sesiones abiertas.",
+			},
+			Action: "Restablecer contraseña",
+			Footer: "Si fuiste tú, no necesitas hacer nada más.",
+		},
+		i18n.EnUS: {
+			Subject: "New recovery codes for Monthra",
+			Heading: "New recovery codes",
+			Lines: []string{
+				"A new set of recovery codes was created for the two-step verification of your Monthra account. The old codes no longer work.",
+				"Keep the new ones somewhere safe: they are the only way in if you lose your authenticator app.",
+				"If it was not you, reset your password now with the button below. That signs out every open session.",
+			},
+			Action: "Reset password",
+			Footer: "If it was you, there is nothing else to do.",
+		},
+	},
 	TemplateAccountDeleted: {
 		i18n.PtBR: {
 			Subject: "Sua conta no Monthra foi excluída",

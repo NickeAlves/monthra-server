@@ -21,7 +21,7 @@ func newRenderer(t *testing.T) *Renderer {
 func TestCatalogIsComplete(t *testing.T) {
 	all := []Template{
 		TemplateVerifyEmail, TemplateRegisterAttempt, TemplateResetPassword,
-		TemplatePasswordChanged, TemplateMFAEnabled, TemplateMFADisabled,
+		TemplatePasswordChanged, TemplateMFAEnabled, TemplateMFADisabled, TemplateMFARecoveryCodesRegenerated,
 		TemplateAccountDeleted, TemplateDataExported, TemplateBudgetWarning, TemplateBudgetExceeded,
 	}
 	noAction := map[Template]bool{TemplateAccountDeleted: true}

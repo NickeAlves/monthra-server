@@ -38,6 +38,9 @@ const (
 	// EventDataExported is an export of every record of the account (LGPD);
 	// its reason is how the second factor was checked, if MFA is on.
 	EventDataExported Event = "data_exported"
+	// EventMFARecoveryCodesRegenerated is a new set of MFA recovery codes;
+	// its reason is how the second factor was checked.
+	EventMFARecoveryCodesRegenerated Event = "mfa_recovery_codes_regenerated"
 )
 
 // maxUserAgent bounds the stored user agent.

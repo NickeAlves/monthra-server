@@ -25,6 +25,7 @@ const (
 	mfaEventEnabled      = "enabled"
 	mfaEventDisabled     = "disabled"
 	mfaEventRecoveryCode = "recovery_code_used"
+	mfaEventRegenerated  = "recovery_codes_regenerated"
 )
 
 // How a second factor was checked, stored as the reason of audit entries.
@@ -108,12 +109,7 @@ func (s *Service) EnableMFA(ctx context.Context, p core.Principal, code string, 
 	if !ok {
 		return nil, ErrMFACodeInvalid
 	}
-	codes := core.NewRecoveryCodes(core.RecoveryCodeCount)
-	hashes := make([]string, len(codes))
-	for i, rc := range codes {
-		canonical, _ := core.NormalizeRecoveryCode(rc)
-		hashes[i] = core.HashRecoveryCode(canonical)
-	}
+	codes, hashes := newRecoveryCodes()
 	enabled, err := s.Users.EnableMFA(ctx, u.ID, u.MFA.PendingSecret, hashes, step, now)
 	if err != nil {
 		return nil, fmt.Errorf("enable mfa: %w", err)
@@ -158,6 +154,54 @@ func (s *Service) DisableMFA(ctx context.Context, p core.Principal, in DisableMF
 	s.Metrics.MFA(mfaEventDisabled)
 	s.notify(ctx, u, email.TemplateMFADisabled)
 	return nil
+}
+
+// RegenerateRecoveryCodesInput is the password and a current code (TOTP or
+// recovery).
+type RegenerateRecoveryCodesInput struct {
+	Password string
+	Code     string
+}
+
+// RegenerateRecoveryCodes replaces every recovery code with a new set,
+// shown once and stored only as hashes, for an owner running out of them
+// or who lost the old ones. It asks for both factors, as turning MFA off
+// does; a recovery code given as the second factor is spent with the rest.
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, p core.Principal, in RegenerateRecoveryCodesInput, c Client) ([]string, error) {
+	u, err := s.currentUser(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	if !u.MFAEnabled() {
+		return nil, ErrMFANotEnabled
+	}
+	factor, err := s.stepUp(ctx, u, in.Password, in.Code, c)
+	if err != nil {
+		return nil, err
+	}
+	codes, hashes := newRecoveryCodes()
+	ok, err := s.Users.ReplaceRecoveryCodes(ctx, u.ID, hashes, s.o.Now())
+	if err != nil {
+		return nil, fmt.Errorf("replace recovery codes: %w", err)
+	}
+	if !ok {
+		return nil, ErrMFANotEnabled // turned off by a concurrent request
+	}
+	s.record(ctx, audit.EventMFARecoveryCodesRegenerated, u.ID, p.SessionID, c, factor)
+	s.Metrics.MFA(mfaEventRegenerated)
+	s.notify(ctx, u, email.TemplateMFARecoveryCodesRegenerated)
+	return codes, nil
+}
+
+// newRecoveryCodes returns a new set of recovery codes and their hashes.
+func newRecoveryCodes() (codes, hashes []string) {
+	codes = core.NewRecoveryCodes(core.RecoveryCodeCount)
+	hashes = make([]string, len(codes))
+	for i, rc := range codes {
+		canonical, _ := core.NormalizeRecoveryCode(rc)
+		hashes[i] = core.HashRecoveryCode(canonical)
+	}
+	return codes, hashes
 }
 
 // VerifyMFAInput is the second step of a login.

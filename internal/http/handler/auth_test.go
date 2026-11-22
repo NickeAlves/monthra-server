@@ -38,6 +38,7 @@ type fakeAuth struct {
 	challenge *authuc.Challenge
 	verify    authuc.VerifyMFAInput
 	disable   authuc.DisableMFAInput
+	renew     authuc.RegenerateRecoveryCodesInput
 	password  string
 	code      string
 	token     string
@@ -97,6 +98,11 @@ func (f *fakeAuth) EnableMFA(_ context.Context, p auth.Principal, code string, _
 func (f *fakeAuth) DisableMFA(_ context.Context, p auth.Principal, in authuc.DisableMFAInput, _ authuc.Client) error {
 	f.principal, f.disable = p, in
 	return f.err
+}
+
+func (f *fakeAuth) RegenerateRecoveryCodes(_ context.Context, p auth.Principal, in authuc.RegenerateRecoveryCodesInput, _ authuc.Client) ([]string, error) {
+	f.principal, f.renew = p, in
+	return []string{"eeee-ffff-gggg-hhhh"}, f.err
 }
 
 func (f *fakeAuth) Refresh(_ context.Context, token string, _ authuc.Client) (authuc.Tokens, error) {
@@ -412,7 +418,17 @@ func TestMFASettings(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.Equal(t, authuc.DisableMFAInput{Password: "pw", Code: "123456"}, svc.disable)
 
-	for path, handle := range map[string]http.HandlerFunc{"setup": h.SetupMFA, "enable": h.EnableMFA, "disable": h.DisableMFA} {
+	w = serve(h.RegenerateRecoveryCodes, post("/api/v1/auth/mfa/recovery-codes", `{"password":"pw","code":"123456"}`, authenticated))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	assert.Equal(t, authuc.RegenerateRecoveryCodesInput{Password: "pw", Code: "123456"}, svc.renew)
+	var renewed map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&renewed))
+	assert.Equal(t, map[string]any{"recoveryCodes": []any{"eeee-ffff-gggg-hhhh"}}, renewed)
+
+	for path, handle := range map[string]http.HandlerFunc{
+		"setup": h.SetupMFA, "enable": h.EnableMFA, "disable": h.DisableMFA, "recovery-codes": h.RegenerateRecoveryCodes,
+	} {
 		w = serve(handle, post("/api/v1/auth/mfa/"+path, `{}`))
 		assert.Equal(t, http.StatusUnauthorized, w.Code, "%s needs a principal", path)
 		w = serve(handle, post("/api/v1/auth/mfa/"+path, `{}`, authenticated))
@@ -425,6 +441,8 @@ func TestMFASettings(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code, "%s rejects the field it does not take", path)
 	}
 	w = serve(h.DisableMFA, post("/api/v1/auth/mfa/disable", `{"password":"pw","code":"1"}`, authenticated))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	w = serve(h.RegenerateRecoveryCodes, post("/api/v1/auth/mfa/recovery-codes", `{"password":"pw","code":"1"}`, authenticated))
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	w = serve(h.EnableMFA, post("/api/v1/auth/mfa/enable", `{"code":"1"}`, authenticated))
 	assert.Equal(t, http.StatusForbidden, w.Code)
